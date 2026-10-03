@@ -1,0 +1,3 @@
+[submodule "sourceport/extern/melee"]
+	path = sourceport/extern/melee
+	url = https://github.com/doldecomp/melee.git

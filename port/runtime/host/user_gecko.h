@@ -1,0 +1,66 @@
+// The player's own Gecko codes, read from GeckoCodes.ini (Dolphin's format: a [Gecko] section of
+// "$Name" headers followed by "XXXXXXXX YYYYYYYY" lines; a [Gecko_Enabled] section is honoured on
+// first read). Each code is switched in the PC settings panel.
+//
+// WHAT CAN WORK HERE
+// Codes that write (types 00, 02, 04 and 06) work: they are applied every frame, as the Gecko
+// handler does. The game's code is translated to PC code ahead of time, so an instruction written
+// into RAM would never be executed; on the Static Recomp a write into the game's code therefore
+// also switches the function it lands in to its bytes in RAM (ppc::redirect_function_at, the way a
+// mod's changed functions run), and switching the code off puts the original bytes back. The Source
+// Port runs no PowerPC, so there such a code is listed with the reason and cannot be switched on.
+// C2 injections and the other handler-only types cannot run on either engine. The codes Slippi
+// ships, and the port's own (widescreen, PAL stock icons, screen shake), are translated in and do
+// not come from this file.
+//
+// Every code changes the game, so an online match only stays in sync when both players run the
+// same ones. The panel says so whenever any code is on.
+// SPDX-License-Identifier: GPL-2.0-or-later
+#pragma once
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace user_gecko {
+
+struct Code {
+  std::string name;
+  std::vector<std::string> notes;   // "*" lines under the header
+  std::vector<std::pair<uint32_t, uint32_t>> lines;
+  bool supported = false;
+  std::string reason;               // why not, when unsupported
+  bool enabled = false;
+  bool patches_code = false;        // writes into the game's code: its functions run from RAM while on
+  bool patch_live = false;          // those writes are in RAM now
+  std::vector<std::pair<uint32_t, uint8_t>> original;   // the code bytes they replaced
+};
+
+// Whether a write into the game's code can take effect: yes on the Static Recomp (the function runs
+// from RAM), no on the Source Port. Call before load(); the default is no.
+void set_code_patches_allowed(bool allowed);
+
+// Reads the file (missing is fine: no codes). `enabled_names` are the codes saved as on in the
+// settings file; until the panel has saved a choice (`chosen`), the file's [Gecko_Enabled] is used.
+void load(const std::string& path, const std::vector<std::string>& enabled_names, bool chosen);
+const std::string& path();
+std::vector<Code>& codes();
+bool any_enabled();
+// The Source Port runs no PowerPC. For one of Slippi's optional codes it carries as C (widescreen,
+// screen shake, the L-cancel flash, Lagless FoD), the name of that built-in switch; else null.
+const char* native_equivalent(const Code& c);
+
+// Parses a pasted or typed code and appends it, so a player can bring in a code without editing
+// GeckoCodes.ini by hand. `body` is the code's hex lines, one "XXXXXXXX YYYYYYYY" pair per line
+// (blank lines and "*" note lines are fine and kept); if its first line is "$Name", that name is
+// used instead of `name`. Returns empty on success, or why it was refused (a duplicate name, or no
+// hex-pair line found). Does not write the file; call save() afterwards.
+std::string add(const std::string& name, const std::string& body);
+// Removes a code by name. Does not write the file; call save() afterwards.
+void remove(const std::string& name);
+// Writes every current code back to GeckoCodes.ini, in Dolphin's format, so the file on disk always
+// matches what the panel shows (and stays readable by Dolphin or another tool). True on success.
+bool save();
+// Called once per game frame (from HLE(PADRead)) to apply the enabled codes' writes.
+void apply();
+
+}  // namespace user_gecko
