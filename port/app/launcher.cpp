@@ -1297,6 +1297,9 @@ void launch_game_now() {
   const DWORD error = launcher::start_process(widen(exe), widen(cmd), widen(cwd), 0, pi);
   if (error != ERROR_SUCCESS) {
     launcher::lobby::game_running(false);
+#ifdef MELEE_NO_SLIPPI
+    launcher::lobby::restart_after_match();   // no game took the lobby's port after all
+#endif
     report_launch_error(error, exe, cwd);
     return;
   }
@@ -1657,7 +1660,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       launcher::lobby::game_running(false);
       set_text(g_play_btn, "PLAY");
 #ifdef MELEE_NO_SLIPPI
-      if (g_lobby_game_active && wp != 0)
+      launcher::lobby::restart_after_match();   // before any dialog: the lobby is back while it is read
+      if (g_lobby_game_active && wp != 0 && !g_launcher_test)
         MessageBoxW(hwnd, L"The match could not connect or the game exited with an error. A direct connection needs one of you to be reachable: the same network, or a forwarded port. Check melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
 #else
       if (g_lobby_game_active && wp != 0)
@@ -1716,12 +1720,18 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_active_version.empty() && file_exists(game_exe())) {
           std::error_code ec;
           std::filesystem::create_directories(std::filesystem::u8path(g_dir + "\\p2p-results"), ec);
-          g_lobby_launch_args = match.p2p_args;
+          // The two games start seconds apart and each takes several more to open its port, so
+          // each keeps dialing (and keeps its router mapping alive) far longer than the bare default.
+          g_lobby_launch_args = match.p2p_args + " --p2p-connect-seconds 45";
+          // The game binds the lobby's own UDP port, the one the other player's router already lets
+          // through: the lobby closes its socket first and comes back when the game exits.
+          launcher::lobby::stop_for_match(match);
           g_game_exe = game_exe(); launch_game_now();
         } else {
           launcher::lobby::game_running(false);
-          MessageBoxW(hwnd, L"The match could not start. Select an installed current build and disc, then request another match.",
-                      L"Lobby", MB_ICONWARNING);
+          if (!g_launcher_test)
+            MessageBoxW(hwnd, L"The match could not start. Select an installed current build and disc, then request another match.",
+                        L"Lobby", MB_ICONWARNING);
         }
       }
 #else

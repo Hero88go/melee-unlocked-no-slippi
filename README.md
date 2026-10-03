@@ -26,19 +26,26 @@ Checked by automated hidden runs on one PC:
 
 - The build boots and plays as the retail game (title, menus, character select, saves).
 - Two instances play a full rollback match from the command line: 0 checksum mismatches and identical
-  signed result files on both sides, also through 60 ms of added lag with jitter and 2% packet loss
-  (about 100 rollbacks per side). Test: `tools/p2p_pair.py`, fault injection `tools/net_fault_proxy.py`.
+  signed result files on both sides, at five settings from no lag to 90 ms of added lag with 12 ms of
+  jitter and 3% packet loss. Test: `tools/p2p_pair.py`, fault injection `tools/net_fault_proxy.py`.
+- Both launcher modes run end to end with no human: two launchers started off screen find each other,
+  agree a match (Find match, and request then accept), start their games, the games play a match with
+  0 checksum mismatches and identical result files, and both lobbies come back afterwards.
+  Test: `tools/p2p_launcher_pair.py` (add `--mode direct` for request and accept).
 - Session unit tests (handshake, tampered and replayed packets, lossy input exchange, stall rule,
   desync flag) and lobby tests (match setup agreement, automatic pairing of two and three players,
   blocklist, old protocol refusal, invites) pass.
 
+How two players behind routers connect: the lobby already has a working UDP path between the two
+launchers. When a match is agreed each launcher closes its lobby socket and its game opens the same
+port and dials the address the lobby saw for the other player, so the game uses the path the lobby
+opened. The lobby returns when the game closes.
+
 Not yet checked or not yet built:
 
-- No match has been played between two different PCs over the internet. There is no relay and no
-  hole punching for the game port yet: today a match connects on a LAN, with a public address, or with
-  a forwarded port. This is the next piece of work.
-- The launcher's two modes are tested at the protocol level only; the full click-through (lobby to a
-  running match) has not been run end to end.
+- No match has been played between two different PCs over the internet. The port handoff above is
+  tested on one PC only. It is expected to fail on routers that give a new public port to the
+  reopened socket or drop the mapping within a few seconds, and there is no relay to fall back on.
 - Characters are each player's first main; stage is drawn from the legal list by a shared seed. There
   is no in-game character or stage select for online play yet, and one game per session.
 - No replay recording in this build.

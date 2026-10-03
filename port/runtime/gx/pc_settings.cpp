@@ -7119,15 +7119,20 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       for (user_gecko::Code& c : user_gecko::codes()) {
         ImGui::PushID(&c);
         const char* built_in = user_gecko::native_equivalent(c);
-        ImGui::BeginDisabled();
-        settings_toggle(c.name.c_str(), &c.enabled);
+        // A code that only writes variables this build can place runs here too (user_gecko.h);
+        // the rest keep the rule above.
+        const bool runs_here = c.supported && !built_in;
+        ImGui::BeginDisabled(!runs_here);
+        if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
         if (built_in)
           engine_only_reason("Built into the Source Port: \"%s\" above is the switch that applies here.\n"
                              "This one is your setting for the Static Recomp.", built_in);
-        else
-          engine_only_reason("Static Recomp only. A Gecko code is PowerPC written over the console's\n"
-                             "addresses, and the Source Port runs the game as C.");
+        else if (!runs_here)
+          engine_only_reason("Cannot run on the Source Port: this code %s.\n"
+                             "It keeps its setting for the Static Recomp.", c.reason.c_str());
+        else if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Writes game variables only, so it runs on the Source Port too.\nNever applied online or in replays.");
         ImGui::PopID();
       }
     }

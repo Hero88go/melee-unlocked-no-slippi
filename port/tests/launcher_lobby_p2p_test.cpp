@@ -862,10 +862,18 @@ void p2p_setup() {
   check(pa["names"] == names && pb["names"] == names, "p2p: the same names in slot order, without the colon");
   check(pa["expect"] == b.id() && pb["expect"] == a.id(), "p2p: each expects the other's identity key");
   const int port_a = pa.value("port", 0), port_b = pb.value("port", 0);
-  check(port_a > 0 && port_b > 0 && port_a != port_b && port_a != a.port() && port_b != b.port(), "p2p: each game has a UDP port of its own");
-  check(pa["peers"].size() >= 1 && pa["peers"][0] == "127.0.0.1:" + std::to_string(port_b) &&
-        pb["peers"].size() >= 1 && pb["peers"][0] == "127.0.0.1:" + std::to_string(port_a),
-        "p2p: each is told the other's observed address with the other's game port");
+  // The game takes the lobby's own port (the path between the two lobby sockets is the open one),
+  // and the first address to dial is the one this lobby hears the other from.
+  check(port_a > 0 && port_b > 0 && port_a != port_b && port_a == a.port() && port_b == b.port(), "p2p: each game takes its lobby's UDP port");
+  check(pa["peers"].size() >= 1 && pa["peers"][0] == "127.0.0.1:" + std::to_string(b.port()) &&
+        pb["peers"].size() >= 1 && pb["peers"][0] == "127.0.0.1:" + std::to_string(a.port()),
+        "p2p: each dials the other's lobby address as observed, first");
+  for (const Json* p : {&pa, &pb})
+    for (size_t i = 1; i < (*p)["peers"].size(); ++i) {
+      const std::string peer = (*p)["peers"][i].get<std::string>(), port = ":" + std::to_string(p == &pa ? b.port() : a.port());
+      check(peer.size() > port.size() && peer.compare(peer.size() - port.size(), port.size(), port) == 0,
+            "p2p: the other's own addresses carry its lobby port: " + peer);
+    }
   const std::string args = launcher::lobby::p2p_arguments(pa, "C:\\mu\\lobby-peer-identity.json", "C:\\mu\\p2p-results\\r.json");
   std::cout << "      " << args << std::endl;
   check(args.find(" --p2p-port " + std::to_string(port_a) + " --p2p-peer 127.0.0.1:" + std::to_string(port_b)) == 0 &&

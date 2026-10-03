@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <dht.h>
 #include <monocypher.h>
@@ -226,6 +227,7 @@ bool valid_setup(const Json& s) {
   if(!s.is_object() || !s.count("port") || !s["port"].is_number_integer() || s["port"].get<int>()<1 || s["port"].get<int>()>65535) return false;
   if(!s.count("ch") || !s["ch"].is_number_integer() || s["ch"].get<int>()<0 || s["ch"].get<int>()>25) return false;
   if(!s.count("name") || !s["name"].is_string() || s["name"].get<std::string>().size()>96) return false;
+  if(s.count("lobby") && !s["lobby"].is_boolean()) return false;
   if(!s.count("addrs") || !s["addrs"].is_array() || s["addrs"].size()>4) return false;
   for(const auto& a:s["addrs"]) { sockaddr_in e{}; if(!a.is_string() || !numeric_endpoint(a.get<std::string>(),e)) return false; }
   return true;
@@ -598,6 +600,8 @@ struct PeerLobby::Impl {
   std::string invite_found; unsigned invite_seq=0;
   std::vector<std::string> lan;                  // this PC's own addresses, refreshed now and then
   std::string observed;                          // this lobby's address as another player's launcher saw it
+  // Tests: MELEE_P2P_SEPARATE_PORT=1 gives the game a free port of its own, and the lobby stays up.
+  const bool separate_port=[]{ const char* v=std::getenv("MELEE_P2P_SEPARATE_PORT"); return v && std::string(v)=="1"; }();
   // A launcher announcing an older protocol (tests) plays the older flow.
   bool p2p_on() const { return p2p_matches && (!test.protocol || test.protocol>=p2p_protocol); }
   void set_searching(bool on) {
@@ -610,12 +614,15 @@ struct PeerLobby::Impl {
   Json p2p_mine(const std::string& rid) {
     auto& r=requests[rid];
     if(r.count("p2p_mine")) return r["p2p_mine"];
-    const int port=free_udp_port();
+    // The game takes over this lobby's own port: the path between the two lobby sockets is the one
+    // path known to work, and a router that has never seen a new port would turn the other game away.
+    const int port=separate_port?free_udp_port():listen_port;
     Json addrs=Json::array();
     for(const auto& ip:lan_addresses()) addrs.push_back(ip+":"+std::to_string(port));
     const auto mains=profile.value("mains",Json::array());
     r["p2p_mine"]={{"port",port},{"addrs",addrs},{"ch",!mains.empty() && mains[0].is_number_integer()?mains[0].get<int>():2},
                    {"name",p2p_name(profile.value("name",std::string()))}};
+    if(!separate_port) r["p2p_mine"]["lobby"]=true;   // dial the address this lobby is heard from, port included
     return r["p2p_mine"];
   }
   // A refusal this player is not told about: an automatic request, or one from a blocked player.
@@ -1067,11 +1074,13 @@ struct PeerLobby::Impl {
       uint8_t digest[4]{};
       crypto_blake2b(digest,sizeof digest,reinterpret_cast<const uint8_t*>(rid.data()),rid.size());
       const uint32_t seed=(uint32_t(digest[0])<<24)|(uint32_t(digest[1])<<16)|(uint32_t(digest[2])<<8)|digest[3];
-      // Where the other game listens: the address this lobby hears that player from, with their
-      // game's port (the same NAT mapping only on a network that keeps one address per PC), then the
-      // addresses they named themselves (the same network).
+      // Where the other game listens. Their game on their lobby's port: exactly the address this
+      // lobby hears them from, port included (what their router shows for that socket, which is not
+      // the port they bound). Their game on a port of its own: that address with the game's port.
+      // Then the addresses they named themselves (the same network).
       char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET,&peer->second.address.sin_addr,ip,sizeof ip);
-      Json reach=Json::array({std::string(ip)+":"+std::to_string(theirs["port"].get<int>())});
+      Json reach=Json::array({theirs.value("lobby",false)?endpoint_key(peer->second.address)
+                                                         :std::string(ip)+":"+std::to_string(theirs["port"].get<int>())});
       for(const auto& a:theirs["addrs"]) if(reach.size()<6 && std::find(reach.begin(),reach.end(),a)==reach.end()) reach.push_back(a);
       const int c0=first["ch"].get<int>(),c1=second["ch"].get<int>();
       launch["p2p"]={{"slot",requester?0:1},{"port",mine["port"]},{"peers",reach},
@@ -2177,6 +2186,7 @@ void PeerLobby::join(const Json& profile) { p_->join(profile); }
 void PeerLobby::update_profile(const Json& profile) { p_->update_profile(profile); }
 void PeerLobby::command(const std::string& action,const Json& data) { p_->command(action,data); }
 void PeerLobby::presence(const Json& status) { p_->set_presence(status); }
+void PeerLobby::presence_now() { p_->last_presence=0; }
 void PeerLobby::tick() { p_->tick(); }
 Json PeerLobby::state() const { return p_->state(); }
 std::map<std::string,int> PeerLobby::pings() const { return p_->pings(); }

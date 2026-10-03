@@ -35,6 +35,7 @@
 #include "render_options.h"
 #include "training_overlay.h"
 #include "lcancel.h"
+#include "user_gecko.h"
 #include "mu_host.h"
 #include "ppc.h"
 #include "render_observer.h"
@@ -1608,6 +1609,9 @@ void h_pad_read(MuPadStatus out[4]) {
   host::PadState pads[4];
   host::input_poll(pads);
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
+  // The player's data-only Gecko codes, once per frame. Offline only: the writer in the game
+  // library also refuses during an online match, whichever kind.
+  if (slippi::online::session_mode() < 0 && !g_replaying) user_gecko::apply();
   if (host::audio_tracing()) {
     // Latency trace: the first read that shows a new press on port 1 (buttons or the stick leaving
     // its center), the moment the game sees it.
@@ -2852,6 +2856,7 @@ int run(void (*shutdown)(int)) {
   host::game_image = (uint8_t*)module;
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
+  user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
   if (entry(&api, &g_game) != 0) host::die("%s refused host API version %u", g_dll.c_str(), api.version);

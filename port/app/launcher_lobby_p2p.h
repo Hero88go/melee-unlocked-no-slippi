@@ -34,12 +34,14 @@ public:
   // (on), block / unblock (target), connect (invite), and "auto" on a request.
   void command(const std::string& action, const nlohmann::json& data = nlohmann::json::object());
   void presence(const nlohmann::json& status);
+  void presence_now();                                    // the next tick tells every player the status, not the next due one
   void tick();
   nlohmann::json state() const;
   std::map<std::string, int> pings() const;
   // An accepted match to start, once per request: request, opponent, name, code, build, mode, character.
   // A peer-to-peer match (p2p_matches) also carries "p2p": slot, port, peers, chars, stage, seed,
-  // delay, expect, names, auto (see p2p_arguments).
+  // delay, expect, names, auto (see p2p_arguments). The port is this lobby's own (port()) unless
+  // MELEE_P2P_SEPARATE_PORT=1: the lobby must be destroyed before the game can bind it.
   bool take_launch(nlohmann::json& launch);
   std::string invite() const;                             // this player's "Connect by address" line
   void add_address(const std::string& host_port);         // contact a player at a known address
