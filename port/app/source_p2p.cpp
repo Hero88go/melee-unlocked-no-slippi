@@ -1,4 +1,4 @@
-// One peer-to-peer rollback match from the command line, in the build without the Slippi layer:
+// One peer-to-peer rollback session (one game, or several with --p2p-games) from the command line, in the build without the Slippi layer:
 // owns the mu_net session, answers the game's session commands from it, and publishes its state to
 // the neutral netplay state the rest of the host reads.
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -19,6 +21,13 @@ namespace source_p2p {
 namespace {
 
 constexpr uint8_t kCleanup = 0xBA;   // the game leaves its online scene
+// Asked by the game when its match scene ends (mu_p2p_entry.c): one reply byte, 1 when another game
+// of this session may follow and the game should wait for it instead of leaving for the title.
+constexpr uint8_t kSeriesState = 0xC0;
+// The stages a game after the first is drawn from: the legal list of the default singles rules, in
+// the order the protocol document gives (docs/mu-net-protocol.md, 14.2). Both sides must hold the
+// same list, so it is fixed here and not read from any setting.
+const uint16_t kLegalStages[6] = {0x1F, 0x20, 0x1C, 0x08, 0x02, 0x03};
 
 struct Options {
   int local_port = -1;
@@ -35,6 +44,7 @@ struct Options {
   mu_net::Bytes32 expected{};
   std::string names[2] = {"P1", "P2"};
   int connect_seconds = 0;         // how long to keep dialing; 0: the session's own limit
+  int games = 1;                   // games played over this connection; 0: until a player quits
 };
 
 struct State {
@@ -45,6 +55,7 @@ struct State {
   bool closed = false;
   bool match_marked = false;
   bool connected_logged = false;
+  bool over_logged = false;
   mu_net::SessionState last_state = mu_net::SessionState::Idle;
   // The session asks for a speed from its own thread; the simulation thread applies it.
   std::atomic<double> speed{1.0};
@@ -123,7 +134,11 @@ void publish() {
   State& s = g();
   const SessionState state = s.session->state();
   const mu_net::SessionCounters counters = s.session->counters();
-  const bool live = state != SessionState::Idle && state != SessionState::Failed && state != SessionState::Ended;
+  // Between two games of a session the session is still on: nothing that is held back during a
+  // network session (offline-only codes and the like) may switch on for those seconds.
+  const mu_net::NextGame next = s.session->next_game();
+  const bool between = state == SessionState::Ended && (next == mu_net::NextGame::Waiting || next == mu_net::NextGame::Agreed);
+  const bool live = state != SessionState::Idle && state != SessionState::Failed && (state != SessionState::Ended || between);
   auto& shared = host::netplay::session();
   shared.mode.store(live ? (int)host::netplay::kDirect : (int)host::netplay::kOffline, std::memory_order_relaxed);
   shared.in_match.store(state == SessionState::Playing, std::memory_order_relaxed);
@@ -141,18 +156,43 @@ void publish() {
   if (state == SessionState::Failed) host::log("p2p: failed: %s", s.session->failure_text().c_str());
 }
 
+// One result file per game: the first under the name given, game n under "<name>.g<n><extension>".
+std::string result_path(const std::string& base, uint32_t game) {
+  if (game <= 1) return base;
+  const size_t slash = base.find_last_of("/\\");
+  const size_t dot = base.rfind('.');
+  const std::string tag = ".g" + std::to_string(game);
+  if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) return base + tag;
+  return base.substr(0, dot) + tag + base.substr(dot);
+}
+
 void write_result() {
   State& s = g();
   if (s.opt.result_path.empty()) return;
   mu_net::GameResult result;
   if (!s.session->result(result)) return;   // no game was played: nothing to record
+  const uint32_t game = s.session->game_index();
+  const std::string path = result_path(s.opt.result_path, game);
   std::string error;
-  if (s.session->write_result_file(s.opt.result_path, &error))
-    host::log("p2p: result file written: %s (%d input frames, the other side's inputs %s)", s.opt.result_path.c_str(),
+  if (s.session->write_result_file(path, &error))
+    host::log("p2p: result file written: %s (game %u, %d input frames, the other side's inputs %s)", path.c_str(), (unsigned)game,
               result.transcript_frames,
               result.peer_agreement > 0 ? "agree" : result.peer_agreement == 0 ? "DISAGREE" : "not compared yet");
   else
     host::log("p2p: result file not written: %s", error.c_str());
+}
+
+// The game is waiting for a match (it asked for the match state). When the next game of the session
+// was agreed, it begins here: the finished game's file is written once more first (the other side's
+// agreement may have arrived since the game ended), because the session then forgets that game.
+void advance_series() {
+  State& s = g();
+  if (s.session->next_game() != mu_net::NextGame::Agreed) return;
+  write_result();
+  if (!s.session->begin_next_game()) return;
+  s.match_marked = false;   // `@match` sections of an input script count from this game's frame 1
+  const mu_net::SessionDescriptor d = s.session->descriptor();
+  host::log("p2p: game %u of the session: stage %u, seed %08X", (unsigned)s.session->game_index(), (unsigned)d.stage, d.rng_seed);
 }
 
 void close_session() {
@@ -180,9 +220,32 @@ bool on_command(uint8_t cmd, const uint8_t* payload, uint32_t size, std::vector<
         std::memcpy(reply.data() + kMatchStateError, text, sizeof text);
         return true;
       }
+      advance_series();
+      {
+        // The game waits here between two games. If the next one is not going to come (the other
+        // player left, or did not answer), the wait must end: the same error as a closed session.
+        std::string why;
+        if (s.session->state() == mu_net::SessionState::Ended && s.session->next_game(&why) == mu_net::NextGame::Over) {
+          if (!s.over_logged) { s.over_logged = true; host::log("p2p: the session is over: %s", why.c_str()); }
+          static const char text[] = "The match is over";
+          reply.assign(kMatchStateSize, 0);
+          reply[0] = kStateError;
+          std::memcpy(reply.data() + kMatchStateError, text, sizeof text);
+          publish();
+          return true;
+        }
+      }
       s.session->match_state_reply(reply);
       publish();
       return true;
+    case kSeriesState: {
+      // Only a game that reported its end and is waiting for, or has, the other side's NEXT goes
+      // back to the waiting scene. Anything else leaves as a single game always did.
+      const mu_net::NextGame next = s.closed ? mu_net::NextGame::Over : s.session->next_game();
+      reply.assign(1, (uint8_t)(next == mu_net::NextGame::Waiting || next == mu_net::NextGame::Agreed ? 1 : 0));
+      publish();
+      return true;
+    }
     case kInputs:
       // The game resends frame 1 while it waits for the other side; the first one is the start that
       // `@match` sections of an input script count from.
@@ -271,6 +334,9 @@ bool option(const std::string& name, const char* value) {
   } else if (name == "--p2p-connect-seconds") {
     if (!parse_number(value, 10, 1, 600, &n)) return refuse("--p2p-connect-seconds", "<1 to 600>");
     o.connect_seconds = (int)n;
+  } else if (name == "--p2p-games") {
+    if (!parse_number(value, 10, 0, (long)mu_net::kMaxSessionGames, &n)) return refuse("--p2p-games", "<1 to 127 games over one connection, or 0 for no limit>");
+    o.games = (int)n;
   } else {
     std::fprintf(stderr, "unknown option %s\n", name.c_str());
     return false;
@@ -313,6 +379,8 @@ void start(bool harness) {
   // here, so it asks for a longer wait than two games started by hand at the same moment need.
   mu_net::SessionOptions session_options;
   if (o.connect_seconds > 0) session_options.connect_limit_us = (uint64_t)o.connect_seconds * 1000000;
+  session_options.max_games = (uint32_t)o.games;
+  session_options.stage_pool.assign(std::begin(kLegalStages), std::end(kLegalStages));
   s.session->configure(callbacks, session_options);
   s.session->set_identity(identity);
   identity.wipe();
@@ -325,9 +393,9 @@ void start(bool harness) {
   const mu_net::SessionDescriptor descriptor = build_descriptor(o);
   std::string peers;
   for (const mu_net::Endpoint& e : o.peers) peers += (peers.empty() ? "" : ", ") + e.address + ":" + std::to_string(e.port);
-  host::log("p2p: slot %d, characters %u/%u and %u/%u, stage %d, seed %08X, delay %d, UDP port %d, peer %s", o.slot,
+  host::log("p2p: slot %d, characters %u/%u and %u/%u, stage %d, seed %08X, delay %d, games %d, UDP port %d, peer %s", o.slot,
             (unsigned)o.character[0], (unsigned)o.color[0], (unsigned)o.character[1], (unsigned)o.color[1], o.stage,
-            o.seed, o.delay, o.local_port, peers.c_str());
+            o.seed, o.delay, o.games, o.local_port, peers.c_str());
   // The launcher's lobby held this port a moment ago and closes it just before it starts the game:
   // a port still busy gets two seconds to come free. Every other failure is final at once.
   bool started = s.session->start(descriptor, o.slot, endpoint);

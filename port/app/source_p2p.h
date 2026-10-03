@@ -1,5 +1,7 @@
-// The --p2p-* command line of the build without the Slippi layer: one peer-to-peer rollback match
-// (runtime/mu_net) wired to the game's command channel (see source_p2p.cpp).
+// The --p2p-* command line of the build without the Slippi layer: one peer-to-peer rollback session
+// (runtime/mu_net) wired to the game's command channel (see source_p2p.cpp). --p2p-games <n> plays
+// up to n games over the one connection (0: until a player quits); without it the session is one
+// game. Game n after the first writes its result beside --p2p-result as "<name>.g<n><extension>".
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <string>

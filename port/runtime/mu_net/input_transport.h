@@ -70,6 +70,8 @@ enum MessageType : uint8_t {
   kMsgVerify = 0x01,
   kMsgBye = 0x02,
   kMsgResult = 0x03,
+  kMsgInfo = 0x04,     // revision 1: the sender's revision and how many games it plays in one session
+  kMsgNext = 0x05,     // revision 1: the sender is ready for the next game, with that game's descriptor digest
   kMsgCommit = 0x10,
   kMsgAck = 0x11,
   kMsgPing = 0x12,
@@ -92,13 +94,16 @@ struct TransportStats {
   uint64_t conflicts = 0;          // a frame committed again with different pad bytes
   uint64_t samples_ignored = 0;
   uint64_t too_far_ahead = 0;
+  uint64_t other_game = 0;         // well formed, but numbered for another game of the session: dropped whole
 };
 
 // Bytes in, bytes out: no sockets, no clock of its own, no cryptography. The session seals what
 // this builds and opens what this parses.
 class InputTransport {
  public:
-  void reset(int32_t frame_us);
+  // `base` is what this game's frame numbers are raised by on the wire (0 for a session's first
+  // game). Every frame number this class takes and gives is the game's own, counted from 1.
+  void reset(int32_t frame_us, int32_t base = 0);
 
   // Local side. Frames are committed once, in order, starting at 1; a commit is final.
   bool commit(int32_t frame, const uint8_t pad[kPadWireSize]);
@@ -139,6 +144,7 @@ class InputTransport {
 
   Slot local_[kPadRing], remote_[kPadRing];
   int32_t frame_us_ = 16683;
+  int32_t base_ = 0;
   int32_t local_latest_ = 0, remote_latest_ = 0, peer_ack_ = 0, floor_ = 0;
   int32_t newest_remote_seen_ = 0;
   int32_t checksum_frame_ = 0, remote_checksum_frame_ = 0;

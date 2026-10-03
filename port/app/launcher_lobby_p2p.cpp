@@ -187,6 +187,7 @@ const char* wire_reason(const std::string& code) {
   if(code=="mode_hash") return "has a different custom ISO";
   if(code=="expired") return "the request expired";
   if(code=="p2p_version") return "needs a launcher of the same kind and version for peer-to-peer matches";
+  if(code=="p2p_fighter") return "was sent a character or color that does not exist";
   return "cannot play right now";
 }
 // ---- peer-to-peer matches (the build without the Slippi layer) ----
@@ -221,11 +222,20 @@ std::vector<std::string> lan_addresses() {
   }
   freeaddrinfo(result); return out;
 }
+// The character and color of a setup: a character the select screen has, and a color that
+// character has. A setup that names no color means the first one.
+bool legal_fighter(const Json& s) {
+  if(!s.is_object() || !s.count("ch") || !s["ch"].is_number_integer()) return false;
+  const int ch=s["ch"].get<int>();
+  if(ch<0 || ch>25) return false;
+  if(!s.count("col")) return true;
+  return s["col"].is_number_integer() && s["col"].get<int>()>=0 && s["col"].get<int>()<p2p_color_count(ch);
+}
 // One player's half of a match setup as it arrives: the game's UDP port, where to reach it besides
-// the address the lobby sees, the character and the name.
+// the address the lobby sees, the character, its color and the name.
 bool valid_setup(const Json& s) {
   if(!s.is_object() || !s.count("port") || !s["port"].is_number_integer() || s["port"].get<int>()<1 || s["port"].get<int>()>65535) return false;
-  if(!s.count("ch") || !s["ch"].is_number_integer() || s["ch"].get<int>()<0 || s["ch"].get<int>()>25) return false;
+  if(!legal_fighter(s)) return false;
   if(!s.count("name") || !s["name"].is_string() || s["name"].get<std::string>().size()>96) return false;
   if(s.count("lobby") && !s["lobby"].is_boolean()) return false;
   if(!s.count("addrs") || !s["addrs"].is_array() || s["addrs"].size()>4) return false;
@@ -285,6 +295,11 @@ std::string p2p_name(const std::string& name) {
   while(!out.empty() && out.front()==' ') out.erase(out.begin());
   return out.empty()?std::string("Player"):out;
 }
+int p2p_color_count(int character) {
+  // In the order of the character select screen's ids (the lobby's `characters` list).
+  static constexpr int counts[26]={6,5,4,4,6,4,5,4,5,5,4,4,5,4,4,5,5,6,5,5,4,5,5,5,4,5};
+  return character>=0 && character<26?counts[character]:0;
+}
 std::string p2p_arguments(const Json& p,const std::string& identity_file,const std::string& result_file) {
   try {
     if(!p.is_object()) return {};
@@ -307,7 +322,7 @@ std::string p2p_arguments(const Json& p,const std::string& identity_file,const s
     std::string fighters;
     for(const auto& c:chars) {
       if(!c.is_array() || c.size()!=2 || !c[0].is_number_integer() || !c[1].is_number_integer() ||
-         c[0].get<int>()<0 || c[0].get<int>()>25 || c[1].get<int>()<0 || c[1].get<int>()>3) return {};
+         c[0].get<int>()<0 || c[0].get<int>()>25 || c[1].get<int>()<0 || c[1].get<int>()>=p2p_color_count(c[0].get<int>())) return {};
       fighters+=(fighters.empty()?"":":")+std::to_string(c[0].get<int>())+"/"+std::to_string(c[1].get<int>());
     }
     return out+" --p2p-slot "+std::to_string(slot)+" --p2p-chars "+fighters+" --p2p-stage "+std::to_string(stage)+
@@ -594,6 +609,9 @@ struct PeerLobby::Impl {
   // the profile every hello carries. blocked: players never paired with and never answered, kept
   // with the friends. invites: pasted "Connect by address" lines, by identity key, until when.
   bool searching=false;
+  // The character and color for this player's matches, from the launcher's settings with every
+  // profile update: -1 is "the first main". Never sent with the profile, only in a match setup.
+  int p2p_ch=-1,p2p_col=0;
   std::set<std::string> blocked;
   std::map<std::string,ULONGLONG> auto_skip,invites;   // auto_skip: not asked again before this time
   ULONGLONG last_auto=0,lan_at=0;                       // last_auto: when automatic pairing looks next
@@ -620,7 +638,11 @@ struct PeerLobby::Impl {
     Json addrs=Json::array();
     for(const auto& ip:lan_addresses()) addrs.push_back(ip+":"+std::to_string(port));
     const auto mains=profile.value("mains",Json::array());
-    r["p2p_mine"]={{"port",port},{"addrs",addrs},{"ch",!mains.empty() && mains[0].is_number_integer()?mains[0].get<int>():2},
+    // The character chosen on the Profile page, else the first main; the color chosen there when
+    // that character has it, else its first.
+    const int ch=p2p_ch>=0?p2p_ch:!mains.empty() && mains[0].is_number_integer()?mains[0].get<int>():2;
+    const int col=p2p_col>=0 && p2p_col<p2p_color_count(ch)?p2p_col:0;
+    r["p2p_mine"]={{"port",port},{"addrs",addrs},{"ch",ch},{"col",col},
                    {"name",p2p_name(profile.value("name",std::string()))}};
     if(!separate_port) r["p2p_mine"]["lobby"]=true;   // dial the address this lobby is heard from, port included
     return r["p2p_mine"];
@@ -1083,8 +1105,10 @@ struct PeerLobby::Impl {
                                                          :std::string(ip)+":"+std::to_string(theirs["port"].get<int>())});
       for(const auto& a:theirs["addrs"]) if(reach.size()<6 && std::find(reach.begin(),reach.end(),a)==reach.end()) reach.push_back(a);
       const int c0=first["ch"].get<int>(),c1=second["ch"].get<int>();
+      const int k0=first.value("col",0); int k1=second.value("col",0);
+      if(c1==c0 && k1==k0) k1=(k0+1)%p2p_color_count(c0);   // both checked against that character's colors (valid_setup)
       launch["p2p"]={{"slot",requester?0:1},{"port",mine["port"]},{"peers",reach},
-                     {"chars",Json::array({Json::array({c0,0}),Json::array({c1,c1==c0?1:0})})},
+                     {"chars",Json::array({Json::array({c0,k0}),Json::array({c1,k1})})},
                      {"stage",legal_stages[seed%6]},{"seed",hex(digest,sizeof digest)},{"delay",p2p_input_delay},{"expect",other},
                      {"names",Json::array({p2p_name(first["name"].get<std::string>()),p2p_name(second["name"].get<std::string>())})},
                      {"auto",r.value("auto",false)}};
@@ -1256,6 +1280,15 @@ struct PeerLobby::Impl {
       if(p2p_on()) {
         // The accept carries the other player's half of the match setup; this player's half goes
         // back with the acknowledgment (on_data). Without theirs there is no match to start.
+        if(data.count("p2p") && data["p2p"].is_object() && !legal_fighter(data["p2p"])) {
+          // A character or color the game does not have: refused with a reason both players read,
+          // never passed on to the game.
+          requests.erase(it); request_expiry.erase(rid); tracking.erase(rid);
+          queue_event(sender,"decline",{{"request",rid},{"code","p2p_fighter"},{"reason",wire_reason("p2p_fighter")}});
+          say("lobby.refused.p2p_fighter",{{"name",name}},"warn");
+          log("accept of "+short_id(rid)+" refused: character or color out of range");
+          return true;
+        }
         if(!data.count("p2p") || !valid_setup(data["p2p"])) { log("accept of "+short_id(rid)+" without a usable match setup"); return false; }
         it->second["p2p_theirs"]=data["p2p"]; p2p_mine(rid);
       }
@@ -1522,6 +1555,10 @@ struct PeerLobby::Impl {
           if(p2p_on()) {
             complete=content.count("p2p") && valid_setup(content["p2p"]);
             if(complete) request->second["p2p_theirs"]=content["p2p"];
+            else if(content.count("p2p") && content["p2p"].is_object() && !legal_fighter(content["p2p"])) {
+              say("lobby.refused.p2p_fighter",{{"name",peer_name(sender)}},"warn");
+              log("accept of "+short_id(rid)+" acknowledged with a character or color out of range");
+            }
             else log("accept of "+short_id(rid)+" acknowledged without a match setup");
           }
           if(complete) {
@@ -1592,6 +1629,13 @@ struct PeerLobby::Impl {
   // Re-announces this player (ready, Game Build, mods) to everyone known, without joining the public
   // lobby: players who keep it hidden still show friends the right state.
   void update_profile(const Json& next,bool show=false) {
+    // The match character and color ride with the launcher's settings; they are not profile fields
+    // (public_profile leaves them out), so other players learn them only in a match setup.
+    p2p_ch=-1; p2p_col=0;
+    if(next.is_object()) {
+      if(next.count("p2p_ch") && next["p2p_ch"].is_number_integer() && next["p2p_ch"].get<int>()>=0 && next["p2p_ch"].get<int>()<=25) p2p_ch=next["p2p_ch"].get<int>();
+      if(next.count("p2p_col") && next["p2p_col"].is_number_integer() && next["p2p_col"].get<int>()>=0 && next["p2p_col"].get<int>()<=5) p2p_col=next["p2p_col"].get<int>();
+    }
     Json candidate=public_profile(next);
     if(!valid_profile(candidate)) throw std::runtime_error(lang::tr("lobby.error.profile"));
     if(candidate.count("iso")) {

@@ -1,4 +1,4 @@
-// One P2P match from connect to result: handshake, descriptor check, the B0 and B3 replies, stall rule, time sync, desync check.
+// One P2P session from connect to result: handshake, descriptor check, the B0 and B3 replies, stall rule, time sync, desync check, and the agreement on each further game.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -29,6 +29,7 @@ constexpr int32_t kSyncSlack = 10000;      // microseconds of offset the time sy
 constexpr uint64_t kPingEveryUs = 250000;  // before the match, when no COMMIT measures the round trip
 const char kTranscriptDomain[] = "MeleeUnlockedNet1 inputs";
 constexpr uint8_t kByeLeft = 0, kByeMismatch = 1;
+constexpr uint8_t kEndQuit = 7;            // the game's end method for a quit from the pause screen
 
 // The game's match state reply: byte offsets (its own contract).
 enum {
@@ -145,7 +146,23 @@ struct RollbackSession::Impl {
   bool has_expected = false;
   Bytes32 expected{};
 
-  // One run, from start() to the next start(). Reset as a block.
+  // What spans the games of one session. Reset by start() only.
+  struct Series {
+    uint32_t game = 1;              // which game `desc` describes
+    bool peer_info = false;         // the peer sent INFO; without it the peer is revision 0
+    uint8_t peer_minor = 0;
+    uint16_t peer_games = 1;
+    NextGame next = NextGame::None;
+    bool have_peer_next = false;    // the peer's NEXT may arrive while this side's game still runs
+    uint16_t peer_next_game = 0;
+    Bytes32 peer_next_digest{};
+    SessionDescriptor next_desc;
+    Bytes32 next_digest{};
+    uint64_t next_deadline_us = 0;
+    std::string over_why;
+  } series;
+
+  // One game, from start() or begin_next() to the next of either. Reset as a block.
   struct Run {
     uint64_t deadline_us = 0, next_ping_us = 0;
     uint32_t hello_generation = 0;
@@ -155,6 +172,7 @@ struct RollbackSession::Impl {
     int32_t last_frame = 0;
     uint8_t delay = 2;
     bool peer_gone = false;
+    bool gone_after_end = false;   // ... and only after the game had reported its end: the game itself was not cut short
     int wait_frames = 0;
     uint64_t wait_started_us = 0;
     int32_t wait_latest = 0;
@@ -234,9 +252,99 @@ struct RollbackSession::Impl {
     send_plain(kChannelControl, message, true);
   }
 
+  // ------------------------------------------------------------ more than one game
+  bool peer_knows_next() const { return opt.minor >= 1 && series.peer_info && series.peer_minor >= 1; }
+  // Games this session plays: the smaller of the two sides' numbers, one with a revision 0 peer.
+  uint32_t game_limit() const {
+    if (!peer_knows_next()) return 1;
+    const uint32_t mine = opt.max_games ? std::min(opt.max_games, kMaxSessionGames) : kMaxSessionGames;
+    const uint32_t theirs = series.peer_games ? std::min<uint32_t>(series.peer_games, kMaxSessionGames) : kMaxSessionGames;
+    return std::min(mine, theirs);
+  }
+  void send_info() {
+    if (opt.minor < 1) return;
+    message.clear();
+    Writer w(message);
+    w.u8(kMsgInfo);
+    w.u8(opt.minor);
+    w.u16((uint16_t)std::min(opt.max_games, kMaxSessionGames));
+    send_plain(kChannelControl, message, true);
+  }
+  void series_over(const char* why) {
+    if (series.next == NextGame::Over) return;
+    series.next = NextGame::Over;
+    series.over_why = why;
+    log("no further game in this session: %s", why);
+  }
+  void judge_next() {
+    if (series.next != NextGame::Waiting || !series.have_peer_next) return;
+    if (series.peer_next_game != series.game + 1 || crypto_verify32(series.peer_next_digest.data(), series.next_digest.data()) != 0) {
+      send_bye(kByeMismatch);
+      series_over("The two games do not agree on the next game's setup");
+      return;
+    }
+    series.next = NextGame::Agreed;
+    log("next game agreed: game %u, match setup %s, stage %u", (unsigned)(series.game + 1), to_hex(series.next_digest.data(), 8).c_str(),
+        (unsigned)series.next_desc.stage);
+  }
+  // The game has reported its end: either this side says it is ready for the next game, or the
+  // session is over. Every reason not to go on is one both sides see (the limit both announced, a
+  // synchronized end method, a desync both checksums show) or one the peer learns from the BYE
+  // that follows when the host stops.
+  void offer_next(uint64_t now_us) {
+    if (series.next != NextGame::None) return;
+    if (series.game >= game_limit())
+      return series_over(opt.minor >= 1 && !peer_knows_next() ? "The other game plays one game per session" : "The session's last game was played");
+    if (run.peer_gone) return series_over("The other player left");
+    if (counters.desync) return series_over("The two games went out of sync");
+    if (!game.has_outcome || game.winner < -1) return series_over("The game did not finish");
+    if (game.end_method == kEndQuit) return series_over("A player quit the game");
+    series.next_desc = next_descriptor(desc, digest, series.game + 1, opt.stage_pool);
+    series.next_digest = mu_net::digest(series.next_desc);
+    message.clear();
+    Writer w(message);
+    w.u8(kMsgNext);
+    w.u16((uint16_t)(series.game + 1));
+    w.bytes(series.next_digest.data(), series.next_digest.size());
+    send_plain(kChannelControl, message, true);
+    series.next = NextGame::Waiting;
+    series.next_deadline_us = now_us + opt.next_limit_us;
+    judge_next();
+  }
+  bool begin_next(uint64_t now_us) {
+    if (series.next != NextGame::Agreed || state != SessionState::Ended || !link) return false;
+    desc = series.next_desc;
+    digest = series.next_digest;
+    ++series.game;
+    series.next = NextGame::None;
+    series.have_peer_next = false;
+    // The connection and its keys stay; everything counted per game starts over.
+    const Run before = run;
+    run = Run();
+    run.verify_sent = true;
+    run.pinned = true;
+    run.hello_generation = before.hello_generation;
+    run.reject_logs = before.reject_logs;
+    run.next_ping_us = now_us;
+    const SessionCounters kept = counters;
+    counters = SessionCounters();
+    counters.packets_rejected = kept.packets_rejected;
+    counters.messages_malformed = kept.messages_malformed;
+    checksums.clear();
+    game = GameResult();
+    for (auto& m : marks) m = Mark();
+    // This game's frames travel above every frame of the games before (kGameFrameSpan apart), so
+    // a COMMIT or ACK of the finished game that arrives now is recognised and dropped.
+    transport.reset(opt.game_frame_us, (int32_t)(series.game - 1) * kGameFrameSpan);
+    state = SessionState::Ready;
+    log("ready: game %u, both games hold match setup %s", (unsigned)series.game, to_hex(digest.data(), 8).c_str());
+    return true;
+  }
+
   // ------------------------------------------------------------ start and stop
   bool start_common(const SessionDescriptor& descriptor, int slot, Link* use_link, const Bytes32* expected_peer) {
     run = Run();
+    series = Series();
     counters = SessionCounters();
     checksums.clear();
     failure.clear();
@@ -337,14 +445,20 @@ struct RollbackSession::Impl {
         state = SessionState::Ready;
         run.next_ping_us = now_us;
         log("ready: both games hold match setup %s", to_hex(digest.data(), 8).c_str());
+        send_info();   // after VERIFY on the ordered channel, so it never reaches a peer before its own Ready
         return;
       }
       case kMsgBye: {
         const uint8_t reason = r.u8();
         if (!r.done()) { ++counters.messages_malformed; return; }
         if (state == SessionState::Playing || state == SessionState::Ended) {
-          if (!run.peer_gone) log("the other player left the match");
+          if (!run.peer_gone) {
+            log(run.game_reported ? "the other player left the session" : "the other player left the match");
+            run.gone_after_end = run.game_reported;
+          }
           run.peer_gone = true;
+          if (series.next == NextGame::Waiting || series.next == NextGame::Agreed)
+            series_over(reason == kByeMismatch ? "The two games do not agree on the next game's setup" : "The other player left");
         } else if (state != SessionState::Failed && state != SessionState::Idle) {
           fail(reason == kByeMismatch ? "The two games do not agree on the match setup (build, mods, characters, stage or rules differ)"
                                       : "The other player left before the match started");
@@ -360,6 +474,30 @@ struct RollbackSession::Impl {
         run.peer_result_frames = frames;
         run.peer_result_digest = theirs;
         judge_agreement();
+        return;
+      }
+      case kMsgInfo: {
+        const uint8_t minor = r.u8();
+        const uint16_t games = r.u16();
+        if (opt.minor < 1 || !r.done()) { ++counters.messages_malformed; return; }
+        if (series.peer_info) return;   // said once per session; the first stands
+        series.peer_info = true;
+        series.peer_minor = minor;
+        series.peer_games = games;
+        return;
+      }
+      case kMsgNext: {
+        const uint16_t next = r.u16();
+        Bytes32 theirs{};
+        r.bytes(theirs.data(), theirs.size());
+        if (opt.minor < 1 || !r.done()) { ++counters.messages_malformed; return; }
+        // One per game, and only for the game after the one this side is in. It can come before
+        // this side's own game has reported its end; it is judged when this side's NEXT goes out.
+        if (series.have_peer_next || series.next == NextGame::Over || state == SessionState::Failed || state == SessionState::Idle) return;
+        series.have_peer_next = true;
+        series.peer_next_game = next;
+        series.peer_next_digest = theirs;
+        judge_next();
         return;
       }
       default:
@@ -433,8 +571,16 @@ struct RollbackSession::Impl {
         break;
       case SessionState::Playing:
       case SessionState::Ended:
-        if (!link->connected() && !run.peer_gone) { run.peer_gone = true; log("the connection to the other player was lost"); }
+        if (!link->connected() && !run.peer_gone) {
+          run.peer_gone = true;
+          run.gone_after_end = run.game_reported;
+          log("the connection to the other player was lost");
+        }
         advance_transcript();
+        if (series.next == NextGame::Waiting || series.next == NextGame::Agreed) {
+          if (run.peer_gone) series_over("The other player left");
+          else if (series.next == NextGame::Waiting && now_us >= series.next_deadline_us) series_over("The other game did not answer for a next game");
+        }
         break;
       default:
         break;
@@ -675,9 +821,9 @@ struct RollbackSession::Impl {
     if (!run.match_begun) {
       begin_match(delay, now_us);
     } else if (frame == 1 && run.last_frame > 1) {
-      // A session is one game: its transcript, its checksums and the peer's frames all count from
-      // this game's frame 1. A second game needs a new start().
-      log("the game asked for frame 1 again after frame %d; a new match needs a new session", run.last_frame);
+      // The transcript, the checksums and the peer's frames all count from this game's frame 1. A
+      // further game has to be agreed with the peer first (NEXT, then begin_next_game()).
+      log("the game asked for frame 1 again after frame %d; a new game has to be agreed with the other side first", run.last_frame);
       build_reply(frame, kInputsDisconnected, reply);
       return;
     }
@@ -727,7 +873,8 @@ struct RollbackSession::Impl {
     transcript_at(run.transcript_frames, out.transcript_digest);
     out.peer_agreement = run.agreement;
     out.desync = counters.desync;
-    out.disconnected = run.peer_gone;
+    out.disconnected = run.peer_gone && !run.gone_after_end;   // a peer that left after the game's end did not cut the game short
+    if (!out.has_outcome) out.game_index = series.game;
   }
 };
 
@@ -838,7 +985,8 @@ void RollbackSession::match_state_reply(std::vector<uint8_t>& reply) {
     const bool up = s.playable();
     b[kMsState] = (uint8_t)(s.state == SessionState::Failed ? kMsStateError : up ? kMsStateConnected
                             : s.state == SessionState::Idle ? kMsStateIdle : kMsStateConnecting);
-    // Ready is said for exactly as long as a match may start: not after this session's one game.
+    // Ready is said for exactly as long as a match may start: not after a game's end, and again
+    // only once the next game was agreed and begun (begin_next_game).
     const bool ready = s.state == SessionState::Ready || s.state == SessionState::Playing;
     b[kMsLocalReady] = ready;
     b[kMsRemoteReady] = ready;
@@ -887,7 +1035,25 @@ void RollbackSession::on_game_end(const uint8_t* payload, size_t size) {
           s.run.transcript_frames, (unsigned long long)c.waits, (unsigned long long)c.stalls, (unsigned long long)c.sync_skips,
           (unsigned long long)c.advances, s.transport.ping_us() / 1000, (unsigned long long)c.checksums_compared,
           (unsigned long long)c.checksum_mismatches, c.desync ? ", DESYNC" : "");
+    s.offer_next(s.now());
+    if (s.link) s.link->flush();
   } catch (...) {}
+}
+
+NextGame RollbackSession::next_game(std::string* why) const {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  if (why) *why = impl_->series.next == NextGame::Over ? impl_->series.over_why : std::string();
+  return impl_->series.next;
+}
+
+bool RollbackSession::begin_next_game() {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  try { return impl_->begin_next(impl_->now()); } catch (...) { return false; }
+}
+
+uint32_t RollbackSession::game_index() const {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  return impl_->series.game;
 }
 
 void RollbackSession::stop() {

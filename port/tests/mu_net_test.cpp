@@ -80,6 +80,11 @@ struct Peer {
   RollbackSession session;
   std::vector<std::string> log;
   double speed = 1.0;
+  // Set before setup(): the games this side plays in one session, its stage pool, its revision.
+  uint32_t max_games = 1;
+  std::vector<uint16_t> pool;
+  uint8_t minor = kProtocolMinor;
+  uint64_t next_limit_us = 20 * 1000000;
   void setup(Clock& clock, uint8_t identity_fill, bool time_sync = false, uint64_t connect_limit_us = 2000000) {
     SessionCallbacks cb;
     cb.log = [this](const char* line) { log.push_back(line); };
@@ -89,6 +94,10 @@ struct Peer {
     opt.pump_thread = false;
     opt.time_sync = time_sync;
     opt.connect_limit_us = connect_limit_us;
+    opt.max_games = max_games;
+    opt.stage_pool = pool;
+    opt.minor = minor;
+    opt.next_limit_us = next_limit_us;
     session.configure(cb, opt);
     session.set_identity(test_identity(identity_fill));
   }
@@ -979,6 +988,333 @@ static void test_pump_thread_session() {
   EXPECT(a.state() == SessionState::Idle && b.state() == SessionState::Idle);
 }
 
+// ---------------------------------------------------------------- more than one game in a session
+static const std::vector<uint16_t> kTestPool = {0x1F, 0x20, 0x1C, 0x08, 0x02, 0x03};
+
+// Both fake games run to `frames`, then the sessions are pumped until each holds every frame.
+static void play_frames(Peer& a, Peer& b, FakeGame& ga, FakeGame& gb, Clock& clock, int frames) {
+  for (int i = 0; i < frames * 8 && (ga.frame <= frames || gb.frame <= frames); ++i) {
+    if (ga.frame <= frames) EXPECT(ga.step() != kInputsDisconnected);
+    if (gb.frame <= frames) EXPECT(gb.step() != kInputsDisconnected);
+    clock.us += 16683;
+  }
+  EXPECT(ga.frame == frames + 1 && gb.frame == frames + 1);
+  for (int i = 0; i < 8; ++i) { a.session.tick(); b.session.tick(); clock.us += 1000; }
+}
+
+// The game's end report: a finished game (method 2) unless told otherwise.
+static void report_end(Peer& p, uint8_t method = 2) {
+  uint8_t end[kGameEndPayloadSize] = {};
+  end[0] = 2; end[4] = 0x10; end[13] = 1; end[14] = method; end[15] = 0xFF;
+  p.session.on_game_end(end, sizeof end);
+}
+
+static void pump(Peer& a, Peer& b, Clock& clock, int rounds = 6) {
+  for (int i = 0; i < rounds; ++i) { a.session.tick(); b.session.tick(); clock.us += 1000; }
+}
+
+static void test_next_descriptor() {
+  const SessionDescriptor d = test_descriptor();
+  const Bytes32 dd = digest(d);
+  const SessionDescriptor n2 = next_descriptor(d, dd, 2, kTestPool), again = next_descriptor(d, dd, 2, kTestPool);
+  std::string why;
+  EXPECT(validate(n2, &why));
+  EXPECT(digest(n2) == digest(again));                 // made from the descriptor and its digest alone
+  EXPECT(digest(n2) != dd && n2.match_id != d.match_id);
+  EXPECT(digest(next_descriptor(d, dd, 3, kTestPool)) != digest(n2));   // the game index is in the draw
+  Bytes32 other = dd;
+  other[0] ^= 1;
+  EXPECT(digest(next_descriptor(d, other, 2, kTestPool)) != digest(n2));
+  bool in_pool = false;
+  for (uint16_t s : kTestPool) in_pool = in_pool || s == n2.stage;
+  EXPECT(in_pool);
+  EXPECT(next_descriptor(d, dd, 2, {}).stage == d.stage);   // no pool: the stage stays
+  EXPECT(n2.players[0].character == d.players[0].character && n2.players[1].name == d.players[1].name);
+  EXPECT(n2.input_delay == d.input_delay && n2.stocks == d.stocks && n2.features == d.features);
+  // Over many games the draw reaches more than one stage.
+  SessionDescriptor walk = d;
+  int changes = 0;
+  for (uint32_t g = 2; g < 40; ++g) {
+    const SessionDescriptor next = next_descriptor(walk, digest(walk), g, kTestPool);
+    changes += next.stage != walk.stage;
+    walk = next;
+  }
+  EXPECT(changes > 5);
+}
+
+static void test_transport_game_base() {
+  // The same messages, numbered for the second game: taken by a transport in that game, dropped
+  // whole by one in another game, and never counted as malformed.
+  InputTransport a, b, first;
+  a.reset(16683, kGameFrameSpan);
+  b.reset(16683, kGameFrameSpan);
+  first.reset(16683);
+  std::vector<uint8_t> message, reply;
+  uint8_t pad[kPadWireSize] = {9, 8, 7, 6, 5, 4, 3, 2};
+  EXPECT(a.commit(1, pad) && a.commit(2, pad));
+  a.set_checksum(1, 0xABCD0001u);
+  a.build_commit(1000, message);
+  EXPECT(message.size() == kCommitHeader + 2 * kPadWireSize);
+  { Reader r(message.data() + 1, 4); EXPECT(r.i32() == kGameFrameSpan + 2); }
+  EXPECT(b.on_message(message.data(), message.size(), 2000, reply));
+  EXPECT(b.remote_latest() == 2 && b.remote_checksum_frame() == 1 && b.remote_checksum() == 0xABCD0001u);
+  EXPECT(reply.size() == 9 && reply[0] == kMsgAck);
+  { Reader r(reply.data() + 1, 4); EXPECT(r.i32() == kGameFrameSpan + 2); }
+  EXPECT(a.on_message(reply.data(), reply.size(), 3000, message) && a.peer_ack() == 2);
+  // The second game's COMMIT at a transport still in the first game.
+  a.build_commit(4000, message);
+  EXPECT(first.on_message(message.data(), message.size(), 5000, reply) && reply.empty());
+  EXPECT(first.remote_latest() == 0 && first.stats().other_game == 1 && first.stats().malformed == 0);
+  // A first game's COMMIT and ACK, late, at a transport in the second game.
+  InputTransport old;
+  old.reset(16683);
+  for (int f = 1; f <= 5; ++f) EXPECT(old.commit(f, pad));
+  old.set_checksum(4, 0x11112222u);
+  old.build_commit(6000, message);
+  EXPECT(b.on_message(message.data(), message.size(), 7000, reply) && reply.empty());
+  EXPECT(b.remote_latest() == 2 && b.remote_checksum_frame() == 1 && b.stats().other_game == 1 && b.stats().conflicts == 0);
+  std::vector<uint8_t> ack;
+  { Writer w(ack); w.u8(kMsgAck); w.i32(5); w.u32(100); }
+  EXPECT(a.on_message(ack.data(), ack.size(), 8000, reply) && a.peer_ack() == 2 && a.stats().other_game == 1);
+}
+
+static void test_two_games() {
+  Clock clock;
+  Wire wire;
+  MemoryLink la(wire, true), lb(wire, false);
+  Peer a, b;
+  a.max_games = 2; a.pool = kTestPool;
+  b.max_games = 0; b.pool = kTestPool;   // no limit on this side: the session plays the smaller number
+  a.setup(clock, 1);
+  b.setup(clock, 2);
+  const SessionDescriptor d = test_descriptor();
+  EXPECT(a.session.start(d, 0, la) && b.session.start(d, 1, lb));
+  EXPECT(settle(a, b, clock));
+  EXPECT(a.session.game_index() == 1 && a.session.next_game() == NextGame::None);
+  EXPECT(!a.session.begin_next_game());
+  const Bytes32 first_digest = a.session.descriptor_digest();
+  FakeGame ga, gb;
+  ga.session = &a.session; ga.slot = 0;
+  gb.session = &b.session; gb.slot = 1;
+  play_frames(a, b, ga, gb, clock, 120);
+  GameResult ra1, rb1;
+  EXPECT(a.session.result(ra1) && b.session.result(rb1) && ra1.transcript_digest == rb1.transcript_digest);
+
+  // One side's game ends first: it waits. Then the other's: both hold the same next descriptor.
+  report_end(a);
+  pump(a, b, clock);
+  EXPECT(a.session.state() == SessionState::Ended && a.session.next_game() == NextGame::Waiting);
+  EXPECT(b.session.next_game() == NextGame::None);
+  std::vector<uint8_t> ms;
+  a.session.match_state_reply(ms);
+  EXPECT(ms.size() == kMatchStateReplySize && ms[0] == 4 && ms[1] == 0);   // connected, not ready
+  report_end(b);
+  pump(a, b, clock);
+  EXPECT(a.session.next_game() == NextGame::Agreed && b.session.next_game() == NextGame::Agreed);
+  EXPECT(a.session.result(ra1) && ra1.peer_agreement == 1 && !ra1.disconnected);
+
+  // The first side begins the next game and already sends; the second is still in the old one and
+  // drops those frames whole. Nothing is lost: they are sent again until acknowledged.
+  EXPECT(a.session.begin_next_game());
+  EXPECT(!a.session.begin_next_game());
+  EXPECT(a.session.state() == SessionState::Ready && a.session.game_index() == 2);
+  FakeGame ga2, gb2;
+  ga2.session = &a.session; ga2.slot = 0;
+  gb2.session = &b.session; gb2.slot = 1;
+  for (int i = 0; i < 3; ++i) { EXPECT(ga2.step() == kInputsNormal); clock.us += 16683; }
+  b.session.tick();
+  EXPECT(b.session.counters().transport.other_game > 0);
+  EXPECT(b.session.counters().transport.malformed == 0);
+  EXPECT(b.session.begin_next_game());
+  const SessionDescriptor da = a.session.descriptor(), db = b.session.descriptor();
+  EXPECT(a.session.descriptor_digest() == b.session.descriptor_digest());
+  EXPECT(a.session.descriptor_digest() != first_digest);
+  EXPECT(da.match_id == db.match_id && da.rng_seed == db.rng_seed && da.stage == db.stage && da.rng_seed != d.rng_seed);
+  EXPECT(da.players[0].character == d.players[0].character && da.players[1].identity_key == test_identity(2).public_key);
+  b.session.match_state_reply(ms);
+  EXPECT(ms.size() == kMatchStateReplySize && ms[0] == 4 && ms[1] == 1 && ms[2] == 1);
+  if (ms.size() == kMatchStateReplySize) {
+    EXPECT(get_be32(&ms[5]) == db.rng_seed);
+    EXPECT(((ms[598 + 0x0E] << 8) | ms[598 + 0x0F]) == db.stage);
+  }
+  GameResult none;
+  EXPECT(!b.session.result(none));   // nothing of the next game was played yet
+
+  // Game 2: frames count from 1 again, with a transcript and checksums of its own.
+  play_frames(a, b, ga2, gb2, clock, 200);
+  const SessionCounters ca = a.session.counters(), cb = b.session.counters();
+  EXPECT(ca.transcript_frames == 202 && cb.transcript_frames == 202);
+  EXPECT(ca.checksums_compared > 20 && ca.checksum_mismatches == 0 && !ca.desync && !cb.desync);
+  EXPECT(ca.transport.conflicts == 0 && cb.transport.conflicts == 0);
+  GameResult ra2, rb2;
+  EXPECT(a.session.result(ra2) && b.session.result(rb2));
+  EXPECT(ra2.transcript_digest == rb2.transcript_digest && ra2.descriptor_digest == rb2.descriptor_digest);
+  EXPECT(ra2.descriptor_digest != ra1.descriptor_digest && ra2.transcript_digest != ra1.transcript_digest);
+  EXPECT(ra2.match_id != ra1.match_id);
+
+  // The limit (2, the smaller of the two sides') is reached: no NEXT, the session is over.
+  report_end(a);
+  report_end(b);
+  pump(a, b, clock);
+  std::string why;
+  EXPECT(a.session.next_game(&why) == NextGame::Over && why.find("last game") != std::string::npos);
+  EXPECT(b.session.next_game() == NextGame::Over);
+  EXPECT(a.session.result(ra2) && ra2.peer_agreement == 1);
+  EXPECT(!a.session.begin_next_game());
+}
+
+static void test_next_digest_mismatch() {
+  // The two sides draw the next stage from different pools: the NEXT digests differ, nobody
+  // starts a second game, and the finished game's record stands.
+  Clock clock;
+  Wire wire;
+  MemoryLink la(wire, true), lb(wire, false);
+  Peer a, b;
+  a.max_games = 0; a.pool = {0x1F};
+  b.max_games = 0; b.pool = {0x08};
+  a.setup(clock, 1);
+  b.setup(clock, 2);
+  const SessionDescriptor d = test_descriptor();
+  EXPECT(a.session.start(d, 0, la) && b.session.start(d, 1, lb));
+  EXPECT(settle(a, b, clock));
+  FakeGame ga, gb;
+  ga.session = &a.session; ga.slot = 0;
+  gb.session = &b.session; gb.slot = 1;
+  play_frames(a, b, ga, gb, clock, 60);
+  report_end(a);
+  report_end(b);
+  pump(a, b, clock);
+  std::string why_a, why_b;
+  EXPECT(a.session.next_game(&why_a) == NextGame::Over && b.session.next_game(&why_b) == NextGame::Over);
+  EXPECT(why_a.find("do not agree") != std::string::npos && why_b.find("do not agree") != std::string::npos);
+  EXPECT(!a.session.begin_next_game() && !b.session.begin_next_game());
+  EXPECT(a.session.state() == SessionState::Ended);
+  GameResult ra;
+  EXPECT(a.session.result(ra) && ra.peer_agreement == 1 && !ra.disconnected);
+  std::vector<uint8_t> reply;
+  uint8_t pad[kPadGameSize] = {};
+  a.session.on_inputs(1, 0, 0, 2, pad, reply);   // a game that restarts anyway gets no frame 1
+  EXPECT(reply.size() == kInputsReplySize && reply[0] == kInputsDisconnected);
+}
+
+static void test_previous_revision_peer() {
+  // A peer of revision 0: game 1 is played exactly as before, then the session is over on both
+  // sides without a NEXT, and the new messages it was sent did it no harm.
+  Clock clock;
+  Wire wire;
+  MemoryLink la(wire, true), lb(wire, false);
+  Peer a, b;
+  a.max_games = 0; a.pool = kTestPool;
+  b.minor = 0;
+  a.setup(clock, 1);
+  b.setup(clock, 2);
+  const SessionDescriptor d = test_descriptor();
+  EXPECT(a.session.start(d, 0, la) && b.session.start(d, 1, lb));
+  EXPECT(settle(a, b, clock));
+  FakeGame ga, gb;
+  ga.session = &a.session; ga.slot = 0;
+  gb.session = &b.session; gb.slot = 1;
+  play_frames(a, b, ga, gb, clock, 100);
+  EXPECT(b.session.counters().messages_malformed == 1);   // the INFO it does not know: counted, ignored
+  EXPECT(a.session.counters().checksum_mismatches == 0 && a.session.counters().transport.other_game == 0);
+  report_end(a);
+  report_end(b);
+  pump(a, b, clock);
+  std::string why;
+  EXPECT(a.session.next_game(&why) == NextGame::Over && why.find("one game per session") != std::string::npos);
+  EXPECT(b.session.next_game() == NextGame::Over);
+  EXPECT(b.session.counters().messages_malformed == 1);   // and no NEXT was sent to it
+  GameResult ra, rb;
+  EXPECT(a.session.result(ra) && b.session.result(rb));
+  EXPECT(ra.peer_agreement == 1 && rb.peer_agreement == 1 && ra.transcript_digest == rb.transcript_digest);
+  EXPECT(a.session.state() == SessionState::Ended && b.session.state() == SessionState::Ended);
+}
+
+static void test_bye_between_games() {
+  // One side is ready for the next game and the other leaves: a clean end, and the finished game
+  // is not marked as cut short.
+  {
+    Clock clock;
+    Wire wire;
+    MemoryLink la(wire, true), lb(wire, false);
+    Peer a, b;
+    a.max_games = 3; b.max_games = 3;
+    a.setup(clock, 1);
+    b.setup(clock, 2);
+    const SessionDescriptor d = test_descriptor();
+    EXPECT(a.session.start(d, 0, la) && b.session.start(d, 1, lb));
+    EXPECT(settle(a, b, clock));
+    FakeGame ga, gb;
+    ga.session = &a.session; ga.slot = 0;
+    gb.session = &b.session; gb.slot = 1;
+    play_frames(a, b, ga, gb, clock, 60);
+    report_end(a);
+    report_end(b);
+    pump(a, b, clock);
+    EXPECT(a.session.next_game() == NextGame::Agreed);
+    b.session.stop();   // BYE
+    pump(a, b, clock);
+    std::string why;
+    EXPECT(a.session.next_game(&why) == NextGame::Over && why.find("left") != std::string::npos);
+    EXPECT(!a.session.begin_next_game());
+    EXPECT(a.session.state() == SessionState::Ended && a.session.failure_text().empty());
+    GameResult ra;
+    EXPECT(a.session.result(ra) && !ra.disconnected && ra.peer_agreement == 1);
+    EXPECT(a.logged("left the session"));
+  }
+  // A quit from the pause screen ends the session on both sides without any NEXT.
+  {
+    Clock clock;
+    Wire wire;
+    MemoryLink la(wire, true), lb(wire, false);
+    Peer a, b;
+    a.max_games = 0; b.max_games = 0;
+    a.setup(clock, 1);
+    b.setup(clock, 2);
+    const SessionDescriptor d = test_descriptor();
+    EXPECT(a.session.start(d, 0, la) && b.session.start(d, 1, lb));
+    EXPECT(settle(a, b, clock));
+    FakeGame ga, gb;
+    ga.session = &a.session; ga.slot = 0;
+    gb.session = &b.session; gb.slot = 1;
+    play_frames(a, b, ga, gb, clock, 40);
+    report_end(a, 7);
+    report_end(b, 7);
+    pump(a, b, clock);
+    std::string why;
+    EXPECT(a.session.next_game(&why) == NextGame::Over && why.find("quit") != std::string::npos);
+    EXPECT(b.session.next_game() == NextGame::Over);
+  }
+  // The other game never says NEXT (it hangs in its results): this side stops waiting.
+  {
+    Clock clock;
+    Wire wire;
+    MemoryLink la(wire, true), lb(wire, false);
+    Peer a, b;
+    a.max_games = 0; b.max_games = 0;
+    a.next_limit_us = 3 * 1000000;
+    a.setup(clock, 1);
+    b.setup(clock, 2);
+    const SessionDescriptor d = test_descriptor();
+    EXPECT(a.session.start(d, 0, la) && b.session.start(d, 1, lb));
+    EXPECT(settle(a, b, clock));
+    FakeGame ga, gb;
+    ga.session = &a.session; ga.slot = 0;
+    gb.session = &b.session; gb.slot = 1;
+    play_frames(a, b, ga, gb, clock, 40);
+    report_end(a);
+    pump(a, b, clock);
+    EXPECT(a.session.next_game() == NextGame::Waiting);
+    clock.us += 2 * 1000000;
+    pump(a, b, clock);
+    EXPECT(a.session.next_game() == NextGame::Waiting);
+    clock.us += 2 * 1000000;
+    pump(a, b, clock);
+    std::string why;
+    EXPECT(a.session.next_game(&why) == NextGame::Over && why.find("did not answer") != std::string::npos);
+  }
+}
+
 int main() {
   test_descriptor_digest();
   test_security_packets();
@@ -994,6 +1330,12 @@ int main() {
   test_identity_file();
   test_loopback_sockets();
   test_pump_thread_session();
+  test_next_descriptor();
+  test_transport_game_base();
+  test_two_games();
+  test_next_digest_mismatch();
+  test_previous_revision_peer();
+  test_bye_between_games();
   if (g_failures) { std::printf("mu_net_test: %d check(s) failed\n", g_failures); return 1; }
   std::printf("mu_net_test: all checks passed\n");
   return 0;

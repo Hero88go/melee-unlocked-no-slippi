@@ -108,4 +108,26 @@ Bytes32 digest(const SessionDescriptor& descriptor) {
   return result;
 }
 
+SessionDescriptor next_descriptor(const SessionDescriptor& current, const Bytes32& current_digest, uint32_t next_game,
+                                  const std::vector<uint16_t>& stage_pool) {
+  // One hash per game, chained through the digest of the game before: the first game's seed and
+  // both players' keys are in that digest, so the stream is this session's own and neither side
+  // can steer a draw after the handshake.
+  static const char kNextDomain[] = "MeleeUnlockedNet1 next";
+  const uint8_t index[4] = {(uint8_t)next_game, (uint8_t)(next_game >> 8), (uint8_t)(next_game >> 16), (uint8_t)(next_game >> 24)};
+  Bytes32 h{};
+  crypto_blake2b_ctx ctx;
+  crypto_blake2b_init(&ctx, h.size());
+  crypto_blake2b_update(&ctx, reinterpret_cast<const uint8_t*>(kNextDomain), sizeof kNextDomain - 1);
+  crypto_blake2b_update(&ctx, current_digest.data(), current_digest.size());
+  crypto_blake2b_update(&ctx, index, sizeof index);
+  crypto_blake2b_final(&ctx, h.data());
+  auto le32 = [&h](size_t at) { return (uint32_t)h[at] | ((uint32_t)h[at + 1] << 8) | ((uint32_t)h[at + 2] << 16) | ((uint32_t)h[at + 3] << 24); };
+  SessionDescriptor next = current;
+  std::memcpy(next.match_id.data(), h.data(), next.match_id.size());
+  next.rng_seed = le32(16);
+  if (!stage_pool.empty()) next.stage = stage_pool[le32(20) % stage_pool.size()];
+  return next;
+}
+
 }  // namespace mu_net

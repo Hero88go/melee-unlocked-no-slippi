@@ -291,6 +291,7 @@ void layout() {
     place(NAME+i,44,194+i*64,i==2?left_width-40-206:left_width-40,24,profile);
   }
   place(OPEN_TO,left_width-196,191+2*64,196,30,profile && !p2p_matches);
+  place(P2P_FIGHTER,left_width-196,191+2*64,196,30,profile && p2p_matches);   // the same slot: only one of the two exists in a build
   place(PROFILE_MAINS,40,358,left_width-32,20,profile);
   for(int i=0;i<26;++i) place(CHARACTER_FIRST+i,40+(i%9)*42,388+(i/9)*42,36,36,profile);
   for(int id:{ADVANCED,PROFILE_MODE,MODE,URL_LABEL,URL}) ShowWindow(GetDlgItem(window,id),SW_HIDE);

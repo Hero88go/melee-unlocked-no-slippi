@@ -8,6 +8,8 @@ game, with no click and no window on the desktop.
     python tools/p2p_launcher_pair.py --iso <disc>                  # both press Find match
     python tools/p2p_launcher_pair.py --iso <disc> --mode direct    # A requests, B accepts
     python tools/p2p_launcher_pair.py --iso <disc> --separate-port  # the game on a port of its own
+    python tools/p2p_launcher_pair.py --iso <disc> --games 2        # two games over the one connection
+    python tools/p2p_launcher_pair.py --iso <disc> --fighters 9/2,0/5   # A plays Marth color 3, B Falcon color 6
 
 Each folder holds the launcher, the game, its libraries and lang/ (hard links to --build-dir where
 the disk allows, copies otherwise), a launcher.ini naming the disc, and its own LOCALAPPDATA and
@@ -19,6 +21,12 @@ both write a result file holding the same descriptor digest and the same input t
 Unless --separate-port is given it also needs each game on its lobby's own port and each lobby
 open again on that port after the game. Only processes this script started are ever ended: the two
 launchers by pid, and their own game children if they outlive the timeout.
+
+The launcher starts its games with --p2p-games 0 (play until a player quits). This script always
+adds --p2p-games <n> after it (--games, default 1), so a run plays exactly that many games; with
+more than one, every game needs its own pair of result files with equal digests (see p2p_pair.py).
+--fighters sets each side's character and color as the Profile page would
+(MELEE_LAUNCHER_TEST_LOBBY_FIGHTER) and checks that both games were started with exactly those.
 """
 import argparse
 import ctypes
@@ -33,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from melee_iso import require_iso
-from p2p_pair import parse_log, parse_result
+from p2p_pair import check_games, parse_log, parse_result
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUILD = "build-release-080-ns/port/Release"
@@ -144,7 +152,9 @@ def main():
     ap.add_argument("--iso")
     ap.add_argument("--mode", choices=("auto", "direct"), default="auto",
                     help="auto: both press Find match. direct: A sends a match request, B accepts it")
-    ap.add_argument("--frames", type=int, default=6000, help="retraces each game runs before it exits")
+    ap.add_argument("--frames", type=int, default=0, help="retraces each game runs before it exits (default 6000 per game)")
+    ap.add_argument("--games", type=int, default=1, help="games played over the one connection (default %(default)s)")
+    ap.add_argument("--fighters", default="", help="<character>/<color>,<character>/<color>: side A's and side B's choice (default: each side's first main)")
     ap.add_argument("--script", default=DEFAULT_SCRIPT, help="input script passed to both games (default %(default)s)")
     ap.add_argument("--base-port", type=int, default=41400, help="lobby A's UDP port; lobby B takes the next one")
     ap.add_argument("--separate-port", action="store_true", help="MELEE_P2P_SEPARATE_PORT=1: the game on a free port of its own")
@@ -152,6 +162,13 @@ def main():
     ap.add_argument("--timeout", type=float, default=0, help="seconds for both games to exit (0: frames/40 + 90)")
     ap.add_argument("--out", default="reports/p2p-launcher-pair")
     args = ap.parse_args()
+    if args.games < 1 or args.games > 127:
+        sys.exit("--games takes 1 to 127")
+    if args.frames <= 0:
+        args.frames = 6000 * args.games
+    fighters = [f.strip() for f in args.fighters.split(",")] if args.fighters else []
+    if fighters and (len(fighters) != 2 or not all(re.fullmatch(r"\d+/\d+", f) for f in fighters)):
+        sys.exit("--fighters takes <character>/<color>,<character>/<color>")
 
     iso = require_iso(args.iso)
     build = Path(args.build_dir)
@@ -174,10 +191,14 @@ def main():
     for i, folder in enumerate(folders):
         prepare(folder, build, iso)
         # Appended after the launcher's own arguments: the card, settings and log stay in this folder.
-        game_args = (f'--hidden --volume 0 --no-music --frames {args.frames} --script "{script}" '
+        # --p2p-games comes after the launcher's own "--p2p-games 0" and so replaces it.
+        game_args = (f'--hidden --volume 0 --no-music --frames {args.frames} --script "{script}" --p2p-games {args.games} '
                      f'--card-dir "{folder / "card"}" --settings-path "{folder / "settings.ini"}" --log-file "{folder / "port.log"}"')
         env = dict(os.environ)
         env.pop("MELEE_P2P_SEPARATE_PORT", None)
+        env.pop("MELEE_LAUNCHER_TEST_LOBBY_FIGHTER", None)
+        if fighters:
+            env["MELEE_LAUNCHER_TEST_LOBBY_FIGHTER"] = fighters[i]
         env.update({
             "LOCALAPPDATA": str(folder / "appdata" / "Local"), "APPDATA": str(folder / "appdata" / "Roaming"),
             "MELEE_LAUNCHER_TEST": "1", "MELEE_LAUNCHER_TEST_GAME_ARGS": game_args, "MELEE_NO_GC_ADAPTER": "1",
@@ -243,15 +264,25 @@ def main():
             log.close()
 
     results = []
+    logs = []
+    firsts = []
+    chars_seen = []
     print("\nside  lobby  game-port first-peer            handshake started compared mismatched result frames peer-agreement lobby-reopened")
     for i, folder in enumerate(folders):
         line = p2p_launch(folder)
         port = re.search(r"--p2p-port (\d+)", line)
         peer = re.search(r"--p2p-peer (\S+)", line)
         wait = re.search(r"--p2p-connect-seconds (\d+)", line)
+        chars = re.search(r"--p2p-chars (\S+)", line)
+        chars_seen.append(chars.group(1) if chars else "")
         game_port = int(port.group(1)) if port else 0
         r = parse_log(folder / "port.log")
-        files = sorted((folder / "p2p-results").glob("*.json")) if (folder / "p2p-results").is_dir() else []
+        logs.append(r)
+        # The first game's file is "<request id>.json"; later games of the session sit beside it as
+        # "<request id>.g<n>.json".
+        files = sorted(f for f in (folder / "p2p-results").glob("*.json") if not re.search(r"\.g\d+\.json$", f.name)) \
+            if (folder / "p2p-results").is_dir() else []
+        firsts.append(files[-1] if files else folder / "p2p-results" / "missing.json")
         res = parse_result(files[-1]) if files else None
         results.append(res)
         lobby = read_text(folder / "lobby.log")
@@ -298,6 +329,23 @@ def main():
             print(f"{label}: {'same' if same else 'DIFFERENT'} ({a[key][:16] or 'none'} / {b[key][:16] or 'none'})")
             if not same:
                 ok = False
+    if args.games > 1 and all(p2p_launch(f) for f in folders):
+        if not check_games(logs, firsts, args.games, NAMES):
+            ok = False
+        for i, r in enumerate(logs):
+            if r["starts"] != args.games:
+                ok = False
+                notes.append(f"{NAMES[i]}: the game started {r['starts']} games, {args.games} were asked for")
+    if fighters and all(chars_seen):
+        # Slot 0 is whoever sent the request, which automatic pairing does not fix: either order.
+        wanted = {f"{fighters[0]}:{fighters[1]}", f"{fighters[1]}:{fighters[0]}"}
+        print(f"characters: {chars_seen[0]} / {chars_seen[1]} (chosen: {fighters[0]} and {fighters[1]})")
+        if chars_seen[0] != chars_seen[1]:
+            ok = False
+            notes.append("the two games were started with different --p2p-chars")
+        elif chars_seen[0] not in wanted and fighters[0] != fighters[1]:
+            ok = False
+            notes.append("the games were not started with the chosen characters and colors")
     for note in notes:
         print(note)
     print("\nPASS" if ok else "\nFAIL")
