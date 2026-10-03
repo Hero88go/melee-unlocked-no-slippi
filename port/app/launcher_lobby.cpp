@@ -64,6 +64,11 @@ std::condition_variable wake;
 std::thread worker;
 bool stopping=false, running=false, joined=false;
 bool go_online_requested=false;
+// A peer-to-peer match on the lobby's UDP port (stop_for_match): hold_wanted is the window thread
+// asking, held is the worker saying its socket is closed. Guarded by `mutex`.
+bool hold_wanted=false, held=false;
+std::condition_variable hold_changed;
+bool test_match_taken=false;                    // test runs: one match per run
 std::filesystem::file_time_type game_started{};
 Json config=Json::object(), snapshot=Json::object();
 std::string notice="Ready when you are. Go online to meet other players.", self;
@@ -432,6 +437,19 @@ private:
     }
   }
 };
+// Test runs only (MELEE_LAUNCHER_TEST): two hidden launchers on one PC meet without the public DHT
+// and without a click (tools/p2p_launcher_pair.py).
+const char* test_env(const char* name) { return test_mode?std::getenv(name):nullptr; }
+// The peer lobby for a profile. `port`: the UDP port to bind instead of the saved one.
+std::unique_ptr<PeerLobby> make_peer(const Json& cfg,int port=0) {
+  std::string url=cfg.value("url",std::string());
+  if(!port) port=cfg.value("peer_port",0);
+  PeerTestOptions options;
+  if(const char* v=test_env("MELEE_LAUNCHER_TEST_LOBBY_PEER")) url=v;
+  if(const char* v=test_env("MELEE_LAUNCHER_TEST_LOBBY_PORT")) { if(!port) port=std::atoi(v); }
+  options.no_dht=test_env("MELEE_LAUNCHER_TEST_NO_DHT")!=nullptr;
+  return std::make_unique<PeerLobby>(directory,url,port,options);
+}
 void work() {
   WSADATA ws{}; WSAStartup(MAKEWORD(2,2),&ws);
   {
@@ -440,18 +458,63 @@ void work() {
     { std::lock_guard<std::mutex> lock(mutex); cfg=config; }
     std::unique_ptr<PeerLobby> peer;
     if(peer_mode(cfg) && cfg.count("name")) {
-      try { peer=std::make_unique<PeerLobby>(directory,cfg.value("url",std::string()),cfg.value("peer_port",0)); }
+      try { peer=make_peer(cfg); }
       catch(const std::exception& ex) { std::lock_guard<std::mutex> lock(mutex); notice=ex.what(); }
     }
     if(peer) probe.poll(Json(),Json(),"");
     std::string cookie;
+    int held_port=0;   // the lobby's port while it is closed for a match; 0: there was no lobby to close
     for(;;) {
       std::deque<Command> batch; bool playing; std::filesystem::file_time_type started;
+      bool close_lobby=false,open_lobby=false,online=false;
       {
         std::unique_lock<std::mutex> lock(mutex);
-        wake.wait_for(lock,std::chrono::milliseconds(peer?50:(joined?800:5000)),[]{ return stopping || !commands.empty(); });
+        // While the lobby is closed for a match nothing is done and commands wait in their queue.
+        wake.wait_for(lock,std::chrono::milliseconds(peer?50:(joined?800:5000)),
+                      []{ return stopping || hold_wanted!=held || (!held && !commands.empty()); });
         if(stopping) break;
-        batch.swap(commands); playing=running; started=game_started;
+        close_lobby=hold_wanted && !held; open_lobby=!hold_wanted && held; online=go_online_requested;
+        if(hold_wanted && held) continue;
+        if(!close_lobby && !open_lobby) batch.swap(commands);
+        playing=running; started=game_started;
+      }
+      if(close_lobby) {
+        // The game is about to bind this port. The other launcher resends its accept every half
+        // second until it has this side's half of the setup, so the lobby answers a little longer
+        // (one resend at least), tells everyone "In game", and only then lets the socket go.
+        held_port=0;
+        if(peer) {
+          held_port=peer->port();
+          try {
+            peer->presence({{"status","In game"},{"stocks",Json::array()}}); peer->presence_now();
+            for(const ULONGLONG until=GetTickCount64()+600;GetTickCount64()<until;Sleep(20)) peer->tick();
+          } catch(...) {}
+          peer.reset();
+          lobby_log(directory,"lobby closed for a match: the game takes UDP port "+std::to_string(held_port));
+        }
+        { std::lock_guard<std::mutex> lock(mutex); held=true; snapshot=Json::object(); pings.clear(); }
+        hold_changed.notify_all();
+        continue;
+      }
+      if(open_lobby) {
+        // The game is gone: the same port again (the game may take a moment to let go of it), so
+        // the router mapping other players already use still leads here, then the player as before.
+        if(held_port) {
+          std::string problem;
+          for(int attempt=0;attempt<10 && !peer;++attempt) {
+            try { peer=make_peer(cfg,held_port); }
+            catch(const std::exception& ex) { problem=ex.what(); Sleep(200); }
+          }
+          if(!peer) { try { peer=make_peer(cfg); } catch(const std::exception& ex) { problem=ex.what(); } }
+          try {
+            if(peer) { if(online) peer->join(cfg); else peer->update_profile(cfg); }
+            if(peer) lobby_log(directory,"lobby open again on UDP port "+std::to_string(peer->port()));
+          } catch(const std::exception& ex) { problem=ex.what(); }
+          if(!peer || (online && !peer->visible())) { std::lock_guard<std::mutex> lock(mutex); notice=problem; }
+        }
+        { std::lock_guard<std::mutex> lock(mutex); held=false; }
+        hold_changed.notify_all();
+        continue;
       }
       try {
         for(const auto& c:batch) {
@@ -461,7 +524,7 @@ void work() {
               if(peer_mode(next)) {
                 if(!peer || !peer_mode(cfg) || cfg.value("url",std::string())!=next.value("url",std::string())) {
                   peer.reset();
-                  peer=std::make_unique<PeerLobby>(directory,next.value("url",std::string()),next.value("peer_port",0));
+                  peer=make_peer(next);
                 }
                 probe.poll(Json(),Json(),"");
                 peer->join(next); cfg=next; save(cfg);
@@ -560,6 +623,7 @@ void work() {
                   commands.push_back({"available",Json::object()});
                   continue;
                 }
+                m.p2p_lobby_port=launch["p2p"].value("port",0)==peer->port();
                 matches.push_back(m);
                 notice=launcher::lang::tr("lobby.p2p.starting",{{"name",m.opponent}});
                 continue;
@@ -1557,6 +1621,7 @@ void init(HWND parent,const std::string& dir) {
   if(config.count("mains") && config["mains"].is_array() && !config["mains"].empty()) selected_mains=config["mains"].get<std::vector<int>>();
   WNDCLASSW wc{}; wc.lpfnWndProc=proc; wc.hInstance=GetModuleHandleW(nullptr); wc.lpszClassName=L"MeleeUnlockedLobby";
   wc.hCursor=LoadCursor(nullptr,IDC_ARROW); wc.hbrBackground=nullptr; RegisterClassW(&wc);
+  if(const char* name=test_env("MELEE_LAUNCHER_TEST_LOBBY_NAME")) config["name"]=std::string(name);
   if(p2p_matches) {
     // Before the worker starts, so the identity file is made (or read) by one thread only.
     identity=identity_key(dir);
@@ -1589,7 +1654,19 @@ void refresh_theme() {
 }
 bool take_match(Match& match) {
   std::lock_guard<std::mutex> lock(mutex); if(matches.empty()) return false;
-  match=matches.front(); matches.pop_front(); pending_match=match; pending_started=false; return true;
+  match=matches.front(); matches.pop_front(); pending_match=match; pending_started=false; test_match_taken=true; return true;
+}
+void stop_for_match(const Match& match) {
+  if(!match.p2p_lobby_port) return;
+  std::unique_lock<std::mutex> lock(mutex);
+  hold_wanted=true; wake.notify_one();
+  // The worker answers within its 50 ms tick plus the 600 ms it keeps answering the other launcher.
+  // Should it not (it never has), the game still retries its bind for two seconds.
+  hold_changed.wait_for(lock,std::chrono::seconds(3),[]{ return held; });
+}
+void restart_after_match() {
+  { std::lock_guard<std::mutex> lock(mutex); if(!hold_wanted) return; hold_wanted=false; }
+  wake.notify_one();
 }
 void game_running(bool value) {
   if(!value && pending_started && pending_match) {
@@ -1675,7 +1752,51 @@ void set_prefs(const Prefs& next) {
 Prefs prefs() { std::lock_guard<std::mutex> lock(mutex); Prefs p=current_prefs; p.open_to=join_list(open_list()); return p; }
 void on_prefs_changed(std::function<void()> callback) { prefs_changed=std::move(callback); }
 
+// Test runs only (MELEE_LAUNCHER_TEST, the build with peer-to-peer matches): what a player would
+// click. MELEE_LAUNCHER_TEST_LOBBY_AUTOSEARCH=1 goes online and presses Find match;
+// MELEE_LAUNCHER_TEST_LOBBY_REQUEST=1 goes online and sends a match request to the first player
+// seen; MELEE_LAUNCHER_TEST_LOBBY_ACCEPT=1 goes online and accepts every request. One match per run.
+static void test_drive() {
+  static const bool search=test_env("MELEE_LAUNCHER_TEST_LOBBY_AUTOSEARCH")!=nullptr;
+  static const bool request=test_env("MELEE_LAUNCHER_TEST_LOBBY_REQUEST")!=nullptr;
+  static const bool accept=test_env("MELEE_LAUNCHER_TEST_LOBBY_ACCEPT")!=nullptr;
+  static bool searched=false;
+  static ULONGLONG next_try=0;
+  if(!p2p_matches || (!search && !request && !accept) || !can_play || build.empty()) return;
+  Json state; std::string me; bool playing,taken;
+  { std::lock_guard<std::mutex> lock(mutex); state=snapshot; me=self; playing=running; taken=test_match_taken; }
+  if(playing || taken) return;
+  const auto now=GetTickCount64();
+  const Json mine=state.value("self",Json::object());
+  if(!mine.is_object() || !mine.value("visible",false)) {
+    if(now<next_try) return;
+    const Json cfg=profile_config();
+    if(cfg.value("name",std::string()).empty() || cfg.value("code",std::string()).empty()) return;
+    { std::lock_guard<std::mutex> lock(mutex); go_online_requested=true; }
+    enqueue("join",cfg); next_try=now+5000;
+    return;
+  }
+  if(accept) for(const auto& r:state.value("requests",Json::array())) {
+    const auto id=r.value("id",std::string());
+    if(r.value("state",std::string())!="pending" || r.value("to",std::string())!=me || id.empty() || prompted_requests.count(id)) continue;
+    prompted_requests.insert(id);   // no banner for it either
+    enqueue("accept",{{"request",id}});
+  }
+  if(now<next_try) return;
+  if(search && !searched) {
+    if(mine.value("searching",false)) { searched=true; return; }
+    next_try=now+1500; enqueue("search",{{"on",true}});
+  }
+  if(request && state.value("requests",Json::array()).empty()) for(const auto& p:state.value("players",Json::array())) {
+    const auto id=p.value("id",std::string());
+    if(id.empty() || id==me || p.value("status",std::string())!="Online" || !p.value("ready",false)) continue;
+    next_try=now+5000;   // the lobby takes one request every three seconds
+    enqueue("request",{{"target",id},{"mode","vanilla"}});
+    break;
+  }
+}
 void tick_ui() {
+  if(test_mode) test_drive();
   // The Lobby page refreshes itself while it is showing; otherwise requests still need answering.
   if(window && IsWindowVisible(window)) return;
   try { consume_results(); } catch(...) {}

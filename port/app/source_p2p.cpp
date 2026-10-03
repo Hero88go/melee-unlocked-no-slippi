@@ -8,9 +8,11 @@
 #include "rollback_session.h"
 #include "window.h"
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace source_p2p {
@@ -32,6 +34,7 @@ struct Options {
   bool has_expected = false;
   mu_net::Bytes32 expected{};
   std::string names[2] = {"P1", "P2"};
+  int connect_seconds = 0;         // how long to keep dialing; 0: the session's own limit
 };
 
 struct State {
@@ -265,6 +268,9 @@ bool option(const std::string& name, const char* value) {
       return refuse("--p2p-names", "<slot 0 name>:<slot 1 name> (at most 31 bytes each)");
     o.names[0] = text.substr(0, colon);
     o.names[1] = text.substr(colon + 1);
+  } else if (name == "--p2p-connect-seconds") {
+    if (!parse_number(value, 10, 1, 600, &n)) return refuse("--p2p-connect-seconds", "<1 to 600>");
+    o.connect_seconds = (int)n;
   } else {
     std::fprintf(stderr, "unknown option %s\n", name.c_str());
     return false;
@@ -303,7 +309,11 @@ void start(bool harness) {
   mu_net::SessionCallbacks callbacks;
   callbacks.log = [](const char* line) { host::log("p2p: %s", line); };
   callbacks.set_emulation_speed = [](double speed) { g().speed.store(speed, std::memory_order_relaxed); };
-  s.session->configure(callbacks, mu_net::SessionOptions{});
+  // A launcher starts the two games seconds apart and each boots for several more before it gets
+  // here, so it asks for a longer wait than two games started by hand at the same moment need.
+  mu_net::SessionOptions session_options;
+  if (o.connect_seconds > 0) session_options.connect_limit_us = (uint64_t)o.connect_seconds * 1000000;
+  s.session->configure(callbacks, session_options);
   s.session->set_identity(identity);
   identity.wipe();
 
@@ -318,7 +328,16 @@ void start(bool harness) {
   host::log("p2p: slot %d, characters %u/%u and %u/%u, stage %d, seed %08X, delay %d, UDP port %d, peer %s", o.slot,
             (unsigned)o.character[0], (unsigned)o.color[0], (unsigned)o.character[1], (unsigned)o.color[1], o.stage,
             o.seed, o.delay, o.local_port, peers.c_str());
-  if (!s.session->start(descriptor, o.slot, endpoint)) {
+  // The launcher's lobby held this port a moment ago and closes it just before it starts the game:
+  // a port still busy gets two seconds to come free. Every other failure is final at once.
+  bool started = s.session->start(descriptor, o.slot, endpoint);
+  for (int attempt = 0; !started && attempt < 10 && o.local_port > 0 &&
+                        s.session->failure_text().find("port could not be opened") != std::string::npos; ++attempt) {
+    if (attempt == 0) host::log("p2p: UDP port %d is busy, trying again for 2 s", o.local_port);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    started = s.session->start(descriptor, o.slot, endpoint);
+  }
+  if (!started) {
     // Without a started session the game is not asked to enter a match: it boots as usual.
     host::log("p2p: the session did not start: %s", s.session->failure_text().c_str());
     s.closed = true;
