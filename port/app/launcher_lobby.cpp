@@ -48,7 +48,7 @@ enum { URL=500, NAME, CODE, LOCATION, MAIN1, MAIN2, MAIN3, JOIN, LEAVE, PLAYERS,
        PROFILE_LOCATION, PROFILE_MAINS, PROFILE_MODE, PLAYER_HEADING, EMPTY_PLAYERS, EMPTY_FRIENDS, EMPTY_CHAT, ADVANCED, FRIEND_CODE, FRIEND_SEND, FRIEND_HINT, EMOJI, AUTO_REJECT, REQUEST_SOUND, VOLUME_LABEL, OPEN_TO,
        PLAYER_FILTER, INVITE_FRIEND, COPY_CODE, PM_PLAYER, PM_FRIEND,
        // Peer-to-peer matches (the build without the Slippi layer; never created otherwise).
-       INVITE_EDIT, INVITE_CONNECT, INVITE_COPY, FIND_MATCH, BLOCK_PLAYER };
+       INVITE_EDIT, INVITE_CONNECT, INVITE_COPY, FIND_MATCH, BLOCK_PLAYER, P2P_FIGHTER };
 HWND owner{}, window{};
 std::string directory, build;
 std::string account_name, account_code;
@@ -57,6 +57,9 @@ std::string account_name, account_code;
 std::string identity;
 std::string invite_selected;                    // the last answered invite whose player was selected in the list
 std::vector<int> selected_mains{2,20,9};
+// Peer-to-peer matches: the character and color they are played with ("p2p_ch" and "p2p_col" in
+// lobby-profile.json). -1 is the first main, which is also what a profile without the keys means.
+int p2p_character=-1, p2p_color=0;
 const int CHARACTER_FIRST=700;
 bool can_play=false;
 std::mutex mutex;
@@ -279,10 +282,11 @@ void save_history() {
 Json profile_config();
 // What the game's own result file says about a peer-to-peer match: {"body":{...},"identity",
 // "signature"} (mu_net's result_outbox). Only a game that ended with an outcome, without a desync
-// or a lost connection, counts as a win or a loss; the last game of the session is the one on file.
-std::string p2p_outcome(const Match& match) {
-  if(match.p2p_result.empty()) return "incomplete";
-  std::ifstream f(std::filesystem::u8path(match.p2p_result),std::ios::binary);
+// or a lost connection, counts as a win or a loss. A session of several games leaves one file per
+// game (game_running reads each).
+std::string p2p_outcome(const std::string& result_file) {
+  if(result_file.empty()) return "incomplete";
+  std::ifstream f(std::filesystem::u8path(result_file),std::ios::binary);
   if(!f) return "incomplete";
   const Json file=Json::parse(f,nullptr,false);
   if(!file.is_object() || !file.count("body") || !file["body"].is_object()) return "incomplete";
@@ -540,6 +544,11 @@ void work() {
             } else {
               if(peer_mode(cfg)) { if(!peer) continue; peer->command(c.action,c.data); }
               else { if(cfg.value("token",std::string()).empty()) continue; api(cfg,c.action,c.data); }
+              // The match character and color were changed on the Profile page: the lobby that
+              // opens again after a match is given `cfg`, so they are kept there too.
+              if(p2p_matches && c.action=="profile" && c.data.is_object()) {
+                for(const char* key:{"p2p_ch","p2p_col"}) { if(c.data.count(key)) cfg[key]=c.data[key]; else cfg.erase(key); }
+              }
               std::lock_guard<std::mutex> lock(mutex);
               if(c.action=="leave") { joined=false; go_online_requested=false; }
             }
@@ -1098,6 +1107,7 @@ void refresh() {
   process_invites(state,ping,me,playing);
   process_private(state);
   for(int i=0;i<26;++i) EnableWindow(GetDlgItem(window,CHARACTER_FIRST+i),!playing);
+  if(p2p_matches) EnableWindow(GetDlgItem(window,P2P_FIGHTER),!playing);
   layout();
   // The page paints its empty states (the badge and text of an empty list) itself. When a list
   // fills or empties, or a private room opens, what was painted is out of date in the strips no
@@ -1112,6 +1122,43 @@ void refresh() {
 void prefs_updated() {
   label(OPEN_TO,launcher::lang::tx("Open to:")+" "+open_summary());
   if(prefs_changed) prefs_changed();
+  announce();
+}
+// The character button of the Profile page (peer-to-peer matches): what this player's matches are
+// played with. "First main" follows the mains below it; a color the character does not have falls
+// back to its first. The choice is saved at once and goes to the lobby with the profile, which
+// puts it into the next match setup (launcher_lobby_p2p.cpp, p2p_mine).
+int fighter_character() { return p2p_character>=0?p2p_character:selected_mains.empty()?2:selected_mains[0]; }
+std::string fighter_caption() {
+  const int ch=fighter_character(), colors=p2p_color_count(ch);
+  const std::string who=p2p_character>=0?std::string(characters[ch])
+                                        :launcher::lang::tr("lobby.p2p.fighter_first",{{"character",std::string(characters[ch])}});
+  return launcher::lang::tr("lobby.p2p.fighter_button",{{"character",who},{"number",std::to_string((p2p_color<colors?p2p_color:0)+1)}});
+}
+void choose_fighter(HWND w) {
+  enum { FIRST_MAIN=1, CHARACTER=100, COLOR=200 };
+  const int ch=fighter_character(), colors=p2p_color_count(ch), color=p2p_color<colors?p2p_color:0;
+  HMENU menu=CreatePopupMenu(), shades=CreatePopupMenu();
+  for(int k=0;k<colors;++k)
+    AppendMenuW(shades,MF_STRING|(k==color?MF_CHECKED:0),COLOR+k,wide(launcher::lang::tr("lobby.p2p.color",{{"number",std::to_string(k+1)}})).c_str());
+  AppendMenuW(menu,MF_POPUP,(UINT_PTR)shades,wide(launcher::lang::tr("lobby.p2p.color_menu")).c_str());
+  AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+  const int first=selected_mains.empty()?2:selected_mains[0];
+  AppendMenuW(menu,MF_STRING|(p2p_character<0?MF_CHECKED:0),FIRST_MAIN,
+              wide(launcher::lang::tr("lobby.p2p.fighter_first",{{"character",std::string(characters[first])}})).c_str());
+  // Two columns: twenty-six names in one would not fit a small screen.
+  for(int i=0;i<26;++i)
+    AppendMenuW(menu,MF_STRING|(p2p_character==i?MF_CHECKED:0)|(i==12?MF_MENUBARBREAK:0),CHARACTER+i,wide(characters[i]).c_str());
+  RECT anchor{}; GetWindowRect(GetDlgItem(w,P2P_FIGHTER),&anchor);
+  const int pick=(int)TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN|TPM_TOPALIGN,anchor.left,anchor.bottom,0,w,nullptr);
+  DestroyMenu(menu);   // the color menu goes with it
+  if(pick<=0) return;
+  if(pick==FIRST_MAIN) p2p_character=-1;
+  else if(pick>=CHARACTER && pick<CHARACTER+26) p2p_character=pick-CHARACTER;
+  else if(pick>=COLOR && pick<COLOR+colors) p2p_color=pick-COLOR;
+  if(p2p_color>=p2p_color_count(fighter_character())) p2p_color=0;
+  { std::lock_guard<std::mutex> lock(mutex); config["p2p_ch"]=p2p_character; config["p2p_col"]=p2p_color; save(config); }
+  label(P2P_FIGHTER,fighter_caption());
   announce();
 }
 // The Open to button: which versions this player takes match requests for. Mods not on this PC
@@ -1300,6 +1347,9 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       control(INVITE_COPY,L"BUTTON",launcher::lang::trw("lobby.invite.copy").c_str());
       control(FIND_MATCH,L"BUTTON",launcher::lang::trw("lobby.search.button").c_str());
       control(BLOCK_PLAYER,L"BUTTON",launcher::lang::trw("lobby.block.button").c_str());
+      // In the Profile page's slot that Open to has in the other build (nothing but vanilla is
+      // played peer to peer, so that button is never shown here).
+      control(P2P_FIGHTER,L"BUTTON",L"");
     }
 
     control(EMPTY_PLAYERS,L"STATIC",L"No players here yet\nGo online to discover players.",SS_CENTER);
@@ -1322,6 +1372,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     label(OPEN_TO,launcher::lang::tx("Open to:")+" "+open_summary());
     label(PLAYER_FILTER,filter_caption());
     label(PROFILE_MAINS,launcher::lang::fill(launcher::lang::tx("Main characters ({count}/3)"),launcher::lang::Args{{"count",std::to_string(selected_mains.size())}}));
+    if(p2p_matches) label(P2P_FIGHTER,fighter_caption());
     SetTimer(w,1,1000,nullptr); layout(); refresh(); return 0;
   }
   if(msg==WM_SIZE) { layout(); return 0; }
@@ -1448,6 +1499,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       if(found!=selected_mains.end()) selected_mains.erase(found);
       else if(selected_mains.size()<3) selected_mains.push_back(character);
       label(PROFILE_MAINS,launcher::lang::fill(launcher::lang::tx("Main characters ({count}/3)"),launcher::lang::Args{{"count",std::to_string(selected_mains.size())}}));
+      if(p2p_matches) label(P2P_FIGHTER,fighter_caption());   // "First main" names the first of these
       InvalidateRect(GetDlgItem(w,id),nullptr,FALSE); return 0;
     }
     if(id==AUTO_REJECT && HIWORD(wp)==BN_CLICKED) {
@@ -1532,6 +1584,8 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       auto target=selected(GetDlgItem(w,PLAYERS),rows); if(!target.empty() && target!=self) enqueue("friend",{{"target",target}});
     } else if(id==OPEN_TO && HIWORD(wp)==BN_CLICKED) {
       choose_open_to(w);
+    } else if(id==P2P_FIGHTER && HIWORD(wp)==BN_CLICKED) {
+      choose_fighter(w);
     } else if(id==PLAYER_FILTER && HIWORD(wp)==BN_CLICKED) {
       choose_filter(w);
     } else if(id==COPY_CODE && HIWORD(wp)==BN_CLICKED) {
@@ -1615,8 +1669,19 @@ void init(HWND parent,const std::string& dir) {
     if(data.count("request_volume") && (!data["request_volume"].is_number_integer() || data["request_volume"].get<int>()<0 || data["request_volume"].get<int>()>100)) valid=false;
     if(data.count("peer_port") && (!data["peer_port"].is_number_integer() || data["peer_port"].get<int>()<1 || data["peer_port"].get<int>()>65535)) valid=false;
     if(data.count("mode") && data["mode"]!="peer" && data["mode"]!="service") valid=false;
+    // The match character and color: a damaged value is dropped, the rest of the profile stays.
+    if(data.count("p2p_ch") && (!data["p2p_ch"].is_number_integer() || data["p2p_ch"].get<int>()<-1 || data["p2p_ch"].get<int>()>25)) data.erase("p2p_ch");
+    if(data.count("p2p_col") && (!data["p2p_col"].is_number_integer() || data["p2p_col"].get<int>()<0 || data["p2p_col"].get<int>()>5)) data.erase("p2p_col");
     if(valid) config=data;
   } catch(...) {}
+  if(p2p_matches) {
+    // Tests: "<character>/<color>" instead of the saved choice, so a run needs no click.
+    if(const char* fighter=test_env("MELEE_LAUNCHER_TEST_LOBBY_FIGHTER")) {
+      int ch=-1,col=0;
+      if(std::sscanf(fighter,"%d/%d",&ch,&col)==2 && ch>=0 && ch<=25 && col>=0 && col<p2p_color_count(ch)) { config["p2p_ch"]=ch; config["p2p_col"]=col; }
+    }
+    p2p_character=config.value("p2p_ch",-1); p2p_color=config.value("p2p_col",0);
+  }
   // The saved mains, also before the Lobby page is opened (a re-announce sends them).
   if(config.count("mains") && config["mains"].is_array() && !config["mains"].empty()) selected_mains=config["mains"].get<std::vector<int>>();
   WNDCLASSW wc{}; wc.lpfnWndProc=proc; wc.hInstance=GetModuleHandleW(nullptr); wc.lpszClassName=L"MeleeUnlockedLobby";
@@ -1648,7 +1713,7 @@ void refresh_theme() {
   InvalidateRect(window,nullptr,FALSE);
   for(int id:{GO_ONLINE,REQUEST,ADD_FRIEND,TAB_PROFILE,TAB_FRIENDS,TAB_HISTORY,TAB_CHAT,
               AUTO_REJECT,REQUEST_SOUND,OPEN_TO,SAVE_PROFILE,SEND,EMOJI,ACCEPT,DECLINE,
-              PLAYER_FILTER,INVITE_FRIEND,COPY_CODE,PM_PLAYER,PM_FRIEND,INVITE_CONNECT,INVITE_COPY,FIND_MATCH,BLOCK_PLAYER})
+              PLAYER_FILTER,INVITE_FRIEND,COPY_CODE,PM_PLAYER,PM_FRIEND,INVITE_CONNECT,INVITE_COPY,FIND_MATCH,BLOCK_PLAYER,P2P_FIGHTER})
     if(HWND h=GetDlgItem(window,id)) InvalidateRect(h,nullptr,FALSE);
   for(int i=0;i<26;++i) if(HWND h=GetDlgItem(window,CHARACTER_FIRST+i)) InvalidateRect(h,nullptr,FALSE);
 }
@@ -1673,7 +1738,18 @@ void game_running(bool value) {
     try {
       consume_results();
       // A peer-to-peer match has no result mailbox: the game's own result file says who won.
-      if(result_events==0) record_match(*pending_match,p2p_outcome(*pending_match),1);
+      if(result_events==0) {
+        const std::string first=pending_match->p2p_result;
+        record_match(*pending_match,p2p_outcome(first),1);
+        // Further games of the same session: "<id>.g2.json", "<id>.g3.json", ... beside the first
+        // (source_p2p.cpp names them), until one is missing.
+        if(p2p_matches && first.size()>5) for(int game=2;game<=127;++game) {
+          const std::string next=first.substr(0,first.size()-5)+".g"+std::to_string(game)+".json";
+          std::error_code ec;
+          if(!std::filesystem::exists(std::filesystem::u8path(next),ec)) break;
+          record_match(*pending_match,p2p_outcome(next),game);
+        }
+      }
       std::lock_guard<std::mutex> lock(mutex); notice="Match ended. Results saved in local history.";
     } catch(const std::exception& ex) { std::lock_guard<std::mutex> lock(mutex); notice=ex.what(); }
   }

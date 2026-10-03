@@ -78,6 +78,9 @@ std::string identity_key(const std::string& directory);
 // A profile name as the game's --p2p-names takes it: no colon, quote, backslash or control
 // character, at most 31 bytes of UTF-8, never empty.
 std::string p2p_name(const std::string& name);
+// How many colors a character has (character select screen ids 0 to 25); 0 for any other id. A
+// match setup's color must be below it.
+int p2p_color_count(int character);
 // The game's arguments for a launch's "p2p" object (" --p2p-port ... --p2p-names \"a:b\""), every
 // field checked again since half of them came from the other player. "" when one does not hold.
 std::string p2p_arguments(const nlohmann::json& p2p, const std::string& identity_file, const std::string& result_file);

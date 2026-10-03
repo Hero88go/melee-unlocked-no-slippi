@@ -10,7 +10,15 @@ namespace mu_net {
 // The gameplay protocol. A peer that speaks another number is refused in the handshake; there is
 // no fallback between versions inside one session.
 constexpr uint16_t kProtocolVersion = 1;
+// The revision inside version 1. It never changes a layout or a rule of game 1, so it is not in the
+// handshake: a peer says it in INFO, and a peer that says nothing is revision 0. Revision 1 adds
+// more than one game in a session (INFO, NEXT, the per-game frame base of the input messages).
+constexpr uint8_t kProtocolMinor = 1;
 constexpr uint16_t kDescriptorFormat = 1;   // the canonical serialization below
+// Wire frame numbers of game k of a session start at (k - 1) x kGameFrameSpan, so an input message
+// still in flight from a finished game can never be read as a frame of the next one.
+constexpr int32_t kGameFrameSpan = 1 << 24;
+constexpr uint32_t kMaxSessionGames = 127;  // the frame bases of more games would not fit an i32
 constexpr int kRollbackHorizon = 7;         // frames the game can roll back; the stall rule is built on it
 constexpr int kMaxSlots = 4;
 constexpr int kPadWireSize = 8;             // pad bytes that travel
@@ -73,5 +81,11 @@ void serialize(const SessionDescriptor& descriptor, std::vector<uint8_t>& out);
 bool parse(const uint8_t* data, size_t size, SessionDescriptor& out);
 // BLAKE2b-256 over a domain string and the canonical bytes.
 Bytes32 digest(const SessionDescriptor& descriptor);
+// The descriptor of game `next_game` (2 for the second) of a session, made from the descriptor of
+// the game before it and that descriptor's digest and from nothing else, so both sides make the
+// same one without a message: a new match id, a new seed, and a stage drawn from `stage_pool` (the
+// stage stays when the pool is empty). Players, keys and rules carry over.
+SessionDescriptor next_descriptor(const SessionDescriptor& current, const Bytes32& current_digest, uint32_t next_game,
+                                  const std::vector<uint16_t>& stage_pool);
 
 }  // namespace mu_net

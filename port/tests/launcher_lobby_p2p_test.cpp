@@ -884,6 +884,15 @@ void p2p_setup() {
   check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: an address that is not one never reaches the command line");
   bad = pa; bad["stage"] = 0x55;
   check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: a stage outside the legal list is refused");
+  bad = pa; bad["chars"][0][1] = 4;   // Fox has four colors, 0 to 3
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: a color the character does not have is refused");
+  bad = pa; bad["chars"][1][0] = 26;
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: a character id past the last one is refused");
+  bad = pa; bad["chars"] = Json::array({Json::array({0, 5}), Json::array({17, 5})});
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").find(" --p2p-chars 0/5:17/5 ") != std::string::npos,
+        "p2p: the sixth color of a character that has six is passed on");
+  check(launcher::lobby::p2p_color_count(2) == 4 && launcher::lobby::p2p_color_count(0) == 6 && launcher::lobby::p2p_color_count(25) == 5 &&
+        launcher::lobby::p2p_color_count(26) == 0 && launcher::lobby::p2p_color_count(-1) == 0, "p2p: color counts by character");
   check(launcher::lobby::p2p_name("a:b\"c\\d") == "abcd" && launcher::lobby::p2p_name(std::string(40, 'x')).size() == 31 &&
         launcher::lobby::p2p_name(" : ") == "Player", "p2p: names are cut to what the game takes");
   const std::string code = launcher::lobby::derived_code("Alpha", a.id());

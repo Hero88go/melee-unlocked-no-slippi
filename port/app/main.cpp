@@ -721,7 +721,7 @@ static void usage() {
 #ifdef MELEE_NO_SLIPPI
   std::printf("           [--p2p-port <local udp port> --p2p-peer <ip:port>... --p2p-slot 0|1 --p2p-chars <id>[/<color>]:<id>[/<color>]\n"
               "            --p2p-stage <id> --p2p-seed <hex> --p2p-delay 1..15 --p2p-identity <file> --p2p-expect <64 hex identity key>\n"
-              "            --p2p-result <file> --p2p-names <a>:<b> --p2p-connect-seconds <1..600>]\n"
+              "            --p2p-result <file> --p2p-names <a>:<b> --p2p-connect-seconds <1..600> --p2p-games <n, 0 = no limit>]\n"
               "            (both players pass the same chars, stage, seed, delay and names)\n");
 #endif
 }

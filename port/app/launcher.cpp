@@ -1722,7 +1722,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           std::filesystem::create_directories(std::filesystem::u8path(g_dir + "\\p2p-results"), ec);
           // The two games start seconds apart and each takes several more to open its port, so
           // each keeps dialing (and keeps its router mapping alive) far longer than the bare default.
-          g_lobby_launch_args = match.p2p_args + " --p2p-connect-seconds 45";
+          // --p2p-games 0: the two keep playing over the one connection until one of them quits a
+          // game or closes the window (a game started by hand plays one game unless told otherwise).
+          g_lobby_launch_args = match.p2p_args + " --p2p-connect-seconds 45 --p2p-games 0";
           // The game binds the lobby's own UDP port, the one the other player's router already lets
           // through: the lobby closes its socket first and comes back when the game exits.
           launcher::lobby::stop_for_match(match);

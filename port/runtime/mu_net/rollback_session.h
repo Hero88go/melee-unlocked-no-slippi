@@ -38,6 +38,15 @@ struct SessionOptions {
   // A thread that pumps the network about every millisecond, so packets are stamped when they
   // arrive and not when the simulation next asks. Tests turn it off and call tick() themselves.
   bool pump_thread = true;
+  // Games this side plays over one connection; 0 is no limit. The session plays the smaller of the
+  // two sides' numbers, and one game with a peer that does not say (protocol revision 0).
+  uint32_t max_games = 1;
+  // The stages a game after the first is drawn from (next_descriptor). Not part of the descriptor:
+  // two sides with different pools disagree on the next digest and the session ends there.
+  std::vector<uint16_t> stage_pool;
+  uint64_t next_limit_us = 20 * 1000000;     // after this side's NEXT: how long the peer's may take
+  // Tests only: 0 behaves as a revision 0 peer (no INFO, no NEXT, both ignored when received).
+  uint8_t minor = kProtocolMinor;
 };
 
 struct EndpointInfo {
@@ -56,6 +65,14 @@ enum class SessionState : uint8_t {
   Playing,
   Ended,         // the game reported its end
   Failed,
+};
+
+// Where a session stands between two games (meaningful once a game has ended).
+enum class NextGame : uint8_t {
+  None,      // no game has ended yet, or the next one has already begun
+  Waiting,   // this side sent NEXT; the peer's has not arrived
+  Agreed,    // both sent NEXT with the same digest: begin_next_game() may be called
+  Over,      // no further game: the limit, a quit, a disconnect, a desync, a refusal or no answer
 };
 
 struct SessionCounters {
@@ -111,6 +128,15 @@ class RollbackSession {
   void on_game_end(const uint8_t* payload, size_t size);
   // Command 0xBA, and any other end of the session. Tells the peer, closes the path, speed 1.0.
   void stop();
+
+  // More than one game over one connection. on_game_end() sends NEXT when another game may follow;
+  // next_game() says where that stands and, when it is Over, `why` gets one plain sentence.
+  NextGame next_game(std::string* why = nullptr) const;
+  // With next_game() == Agreed: the session becomes Ready for the next game with its descriptor,
+  // fresh frame numbers, transcript, checksums and counters. The finished game's result() is gone
+  // after this, so a host writes its result file first. False in any other state.
+  bool begin_next_game();
+  uint32_t game_index() const;                // 1 for the first game of the session
 
   SessionState state() const;
   std::string failure_text() const;

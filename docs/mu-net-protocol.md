@@ -1,4 +1,6 @@
-# mu_net gameplay protocol, version 1
+# mu_net gameplay protocol, version 1 (revision 1)
+
+Revision 1 adds more than one game over one connection (section 14). It changes no layout and no rule of a session's first game, so a revision 0 peer and a revision 1 peer play that game together; see section 12 for what a revision may change.
 
 This is the wire format of the Melee Unlocked peer-to-peer gameplay connection used by P2P Direct and P2P Unranked. It is written so that a second implementation can interoperate. The reference implementation is `port/runtime/mu_net/`.
 
@@ -153,8 +155,10 @@ The whole of sections 3 to 5 must finish within 8 seconds of the start.
 | 0x01 | VERIFY | digest bytes[32], slot u8 | section 5.2 |
 | 0x02 | BYE | reason u8 | the sender ends the session. 0 = left, 1 = descriptor mismatch |
 | 0x03 | RESULT | frames i32, digest bytes[32] | sender's input transcript digest after `frames` confirmed frames (section 9) |
+| 0x04 | INFO | revision u8, games u16 | revision 1. The sender's protocol revision and the most games it plays in this session, 0 for no limit (section 14) |
+| 0x05 | NEXT | game u16, digest bytes[32] | revision 1. The sender's game has ended and it is ready for game `game`, whose descriptor digest is `digest` (section 14) |
 
-An unknown control type is counted and ignored.
+An unknown control type is counted and ignored. That is what a revision 0 peer does with INFO and NEXT.
 
 ## 7. Input messages (channel 1)
 
@@ -182,10 +186,12 @@ Rules:
 - Frames the receiver already holds are not replaced. Different bytes for a held frame are counted as a conflict.
 - Frames more than 200 past the receiver's own finalized frame are not taken.
 - A pad is 8 bytes: the first 8 bytes of the game's 12-byte pad. The receiver hands the game those 8 bytes followed by 4 zero bytes.
+- In game k of a session (section 14) the fields `frame`, `checksum frame` (when not 0) and `ack` travel raised by (k - 1) x 16777216. For the first game that is the plain frame number. Every rule above is about the number with that base taken off.
+- A COMMIT whose `frame` is not in base + 1 to base + 16777215, or whose `ack` is not in base to base + 16777215, for the game the receiver is in, belongs to another game of the session. It is dropped whole (no frame, no acknowledgment, no checksum pair is taken from it), it is not answered, and it is not an error.
 
 ### 7.2 ACK (type 0x11, 9 bytes)
 
-`type u8`, `ack i32`, `echo u32`. Sent at once in answer to a COMMIT that delivered at least one new frame. `ack` is as in COMMIT. `echo` is that COMMIT's `stamp`. The receiver's round trip time is its clock (low 32 bits) minus `echo`; values above 2 seconds are discarded.
+`type u8`, `ack i32`, `echo u32`. Sent at once in answer to a COMMIT that delivered at least one new frame. `ack` is as in COMMIT, with the same base in a later game, and an ACK whose `ack` is outside the receiver's game is dropped the same way. `echo` is that COMMIT's `stamp`. The receiver's round trip time is its clock (low 32 bits) minus `echo`; values above 2 seconds are discarded.
 
 ### 7.3 PING (0x12) and PONG (0x13), 5 bytes each
 
@@ -215,6 +221,8 @@ Each peer keeps a running BLAKE2b state, started with `"MeleeUnlockedNet1 inputs
 
 When its game ends, a peer sends RESULT with its confirmed frame count and digest. A peer that has itself reached the other's frame count compares the two digests.
 
+Every game of a session has a transcript of its own: it starts from that game's descriptor digest, and `f` is the game's own frame number (counted from 1, without the base of section 7.1).
+
 ## 10. LAN beacon
 
 UDP broadcast to port 47633, not inside ENet, not encrypted:
@@ -235,6 +243,8 @@ The signature is Ed25519 by `identity` over `"MeleeUnlockedNet1 result"` followe
 
 One file is one player's signed claim. Two files with the same descriptor digest and transcript digest, signed by the two identities the descriptor names, are a two-sided record.
 
+A session of several games writes one file per game. Each game has a descriptor digest and a match id of its own (section 14), so the files of one session cannot be mistaken for each other. `disconnected` is about the game: a peer that leaves after the game reported its end does not set it.
+
 ## 12. Version rules
 
 - The protocol version is one number. It appears in the HELLO, in the descriptor and in the beacon. Peers with different numbers do not play; there is no downgrade.
@@ -242,6 +252,8 @@ One file is one player's signed claim. Two files with the same descriptor digest
 - The descriptor `format` number changes when only the descriptor's serialization changes.
 - New optional behaviour is negotiated through descriptor feature bits. A peer refuses a descriptor with a bit it does not implement. Commit rules never change during a match.
 - Unknown message types are dropped and counted, never treated as fatal, so a later version can add messages behind a feature bit.
+- A revision is a change inside one protocol version that leaves the first game of a session exactly as it was: new control messages, and behaviour that only starts after both peers have said they know it. The revision is not in the HELLO, the descriptor or the beacon. A peer says its revision in INFO; a peer that sends no INFO is revision 0. Nothing of a revision is used toward a peer that has not announced it, so a peer of an older revision keeps working and simply does not get the addition.
+- Revision 0: sections 1 to 13 without INFO, NEXT and the frame base. Revision 1: section 14.
 
 ## 13. Limits a receiver enforces
 
@@ -259,3 +271,58 @@ One file is one player's signed claim. Two files with the same descriptor digest
 | Connect and handshake | 8 seconds |
 | Wait for inputs | 7 seconds |
 | Round trip time accepted | up to 2 seconds |
+| Games in one session | 127 |
+| Wait for the peer's NEXT | 20 seconds |
+
+## 14. More than one game in a session (revision 1)
+
+After a game ends the two peers can play another one over the same connection, with the same keys, without a new handshake. Both must agree on the next game's descriptor before its frame 1, and nothing that differs between the two machines enters it.
+
+### 14.1 INFO
+
+`type u8 = 0x04`, `revision u8`, `games u16`. 4 bytes. Sent once, on the control channel, when the sender becomes ready (after it has sent its own VERIFY and accepted the peer's). `games` is the most games the sender plays in this session, 0 for no limit.
+
+The session plays at most the smaller of the two `games` values (0 counts as 127). With a peer that sent no INFO, or one whose revision is 0, the session is one game. A second INFO in a session is ignored.
+
+### 14.2 The next descriptor
+
+The descriptor of game n + 1 is made from the descriptor of game n (with the handshake's keys filled in) and that descriptor's digest:
+
+```
+h = BLAKE2b("MeleeUnlockedNet1 next" || digest of game n || (n + 1) as u32)
+match id = h[0..15]
+rng seed = h[16..19] as u32
+stage    = pool[(h[20..23] as u32) mod pool size]
+```
+
+Every other field carries over: route, build id, content hash, rules profile, both players (character, color, name, identity key, session key), alt stage, input delay, rollback horizon, stocks, timer, features. The pool is the stage list of the rules profile, in a fixed order; for the default singles rules it is the stage ids 0x1F, 0x20, 0x1C, 0x08, 0x02, 0x03. With no pool the stage carries over too.
+
+The first game's seed and both session keys are inside the first digest, and each draw is chained to the digest before it, so the whole series of stages and seeds is fixed by the handshake and is the same on both sides.
+
+### 14.3 NEXT
+
+`type u8 = 0x05`, `game u16`, `digest bytes[32]`. 35 bytes. `game` is the number of the game the sender is ready for (2 after the first game) and `digest` is that game's descriptor digest (section 5.1, over the descriptor of 14.2).
+
+A peer sends NEXT when its own game has reported its end, after its RESULT, and only if all of these hold:
+
+- the session's game limit (14.1) is not reached,
+- the peer is still there,
+- no state checksum disagreed during the game,
+- the game ended by itself: it has an outcome, and the end was not a quit from the pause screen.
+
+Otherwise it sends nothing and the session is over for it. It closes the connection with BYE when it leaves.
+
+A peer that has sent NEXT and holds the other's NEXT compares game number and digest:
+
+- Equal: the next game is agreed. Each peer then starts it on its own: descriptor and digest of 14.2, frame 1 again, a new transcript (section 9), no checksums held, PING and PONG until its frame 1 as in 7.3, and the frame base of section 7.1 for game n + 1.
+- Different: it sends BYE with reason 1 and plays no further game. The finished game's result stands.
+
+A NEXT can arrive while the receiver's own game is still running (the two games end a few frames apart). It is kept and compared when the receiver sends its own. Only one NEXT per game is taken.
+
+The session is over, without an error, when a BYE arrives or the connection closes between two games, or when the peer's NEXT has not arrived 20 seconds after this side's own.
+
+The two peers do not begin the next game at the same instant. Until both have, the input messages of the one that is ahead carry a frame base the other does not accept yet, and are dropped (section 7.1); they are sent again until acknowledged, so nothing is lost, and the stall rule holds the peer that is ahead.
+
+### 14.4 A revision 0 peer
+
+It ignores INFO, sends none, and never sends NEXT. The revision 1 peer therefore plays one game with it (14.1) and sends it no NEXT. Game 1, its RESULT and its result file are exactly as in revision 0.

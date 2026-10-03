@@ -32,6 +32,9 @@ Checked by automated hidden runs on one PC:
   agree a match (Find match, and request then accept), start their games, the games play a match with
   0 checksum mismatches and identical result files, and both lobbies come back afterwards.
   Test: `tools/p2p_launcher_pair.py` (add `--mode direct` for request and accept).
+- A session plays game after game on one connection until a player quits: three games in a row, and
+  two games through 40 ms of lag with loss, each with 0 checksum mismatches and identical result files
+  (`tools/p2p_pair.py --games 3`). Chosen characters and colors reach both games.
 - Session unit tests (handshake, tampered and replayed packets, lossy input exchange, stall rule,
   desync flag) and lobby tests (match setup agreement, automatic pairing of two and three players,
   blocklist, old protocol refusal, invites) pass.
@@ -46,8 +49,8 @@ Not yet checked or not yet built:
 - No match has been played between two different PCs over the internet. The port handoff above is
   tested on one PC only. It is expected to fail on routers that give a new public port to the
   reopened socket or drop the mapping within a few seconds, and there is no relay to fall back on.
-- Characters are each player's first main; stage is drawn from the legal list by a shared seed. There
-  is no in-game character or stage select for online play yet, and one game per session.
+- Character and color are chosen in the launcher (Profile tab); the stage is drawn from the legal list
+  by a shared seed. There is no in-game character or stage select for online play yet.
 - No replay recording in this build.
 - Shared source files still contain Slippi code paths that are compiled out (`MELEE_NO_SLIPPI`,
   `MU_NO_SLIPPI`); they are not yet removed from the text.
