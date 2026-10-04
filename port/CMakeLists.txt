@@ -524,7 +524,8 @@ target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SIL
 target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
 
 # mu_net: the project's own peer-to-peer session (no Slippi code). Keys, signatures and packet
-# sealing come from Monocypher, the transport is ENet.
+# sealing come from Monocypher, the transport is ENet. Built where its sources are present.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/mu_net/session_types.cpp" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher/monocypher.c")
 add_library(port_monocypher STATIC third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)
 target_include_directories(port_monocypher PUBLIC third_party/monocypher)
 add_library(mu_net STATIC runtime/mu_net/session_types.cpp runtime/mu_net/peer_identity.cpp
@@ -540,6 +541,7 @@ target_compile_definitions(port_mu_net_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
 target_compile_options(port_mu_net_test PRIVATE /EHsc /utf-8)
 target_link_libraries(port_mu_net_test PRIVATE mu_net)
 add_test(NAME port_mu_net COMMAND port_mu_net_test)
+endif()
 
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).

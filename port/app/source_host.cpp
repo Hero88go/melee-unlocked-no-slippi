@@ -565,8 +565,13 @@ void load_mod_overlay() {
                                      : slippi::online::NativeGameplayProfile::OtherMod;
   slippi::online::set_native_gameplay_profile(g_mod_gameplay_profile);
   g_mod_display_name = summary.empty() ? std::string("this mod") : summary;
+#ifdef MELEE_NO_SLIPPI   // the same fact without the other build's mode names
+  if (!g_view_alias.empty())
+    host::log("mods: %zu files have a retail view: online matches play the retail game", g_view_alias.size());
+#else
   if (!g_view_alias.empty())
     host::log("mods: %zu files have a retail view: Unranked, Teams and Party play the retail game", g_view_alias.size());
+#endif
   // After the aliases: the verdicts only say which entries keep their own number in that view. The
   // alias table itself is left whole, because its being empty or not is what decides the gameplay
   // profile above and how replays are tagged.
@@ -1821,12 +1826,19 @@ void card_save(SourceCardFile& file) {
                     std::fwrite(file.data.data(), 1, file.data.size(), out) == file.data.size();
     std::fclose(out);
     std::error_code ec;
-    if (ok && !MoveFileExW(temporary.c_str(), file.path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-      ec = std::error_code((int)GetLastError(), std::system_category());
-    if (!ok || ec) {
+    // Another program (a virus scanner, the search indexer) can hold the new file or the old one
+    // open for a moment right after it is written, and the replace is refused. Seen about once in
+    // ten saves on one PC. Try again for a short while before giving the save up.
+    DWORD code = 0;
+    for (int attempt = 0; ok && attempt < 20; ++attempt) {
+      if (MoveFileExW(temporary.c_str(), file.path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { code = 0; break; }
+      code = GetLastError();
+      if (code != ERROR_SHARING_VIOLATION && code != ERROR_ACCESS_DENIED && code != ERROR_LOCK_VIOLATION) break;
+      Sleep(10);
+    }
+    if (!ok || code) {
       std::filesystem::remove(temporary, ec);
-      host::log("card: failed to save %s", card_shown(file.path).c_str());
+      host::log("card: failed to save %s (error %lu)", card_shown(file.path).c_str(), (unsigned long)code);
     }
   } catch (const std::exception& error) {
     host::log("card: failed to save %s (%s)", card_safe_name(file).c_str(), error.what());
