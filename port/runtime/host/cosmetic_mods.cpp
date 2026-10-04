@@ -13,7 +13,9 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -79,8 +81,9 @@ struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32
 // 1: .dat and .usd costumes. 2: alternate costumes under other extensions (.lat, .rat) and the online
 // verdict taken at scan time. 3: the pack's own portraits, from its character select file. 4: the
 // skeleton check reads the relocation table (a joint at data offset 0 is a joint) and its reason
-// names the bone. A disc scanned under an older number is scanned again at the next boot.
-constexpr uint32_t kScanRules = 4;
+// names the bone. 5: a costume whose blended mesh names a bone with no bind matrix is marked, since
+// the game stops when it draws one. A disc scanned under an older number is scanned again at the next boot.
+constexpr uint32_t kScanRules = 5;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -1549,9 +1552,82 @@ bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja, const
   }
   return true;
 }
+// The game stops (pobj.c, assertion "jp->envelopemtx") when it draws an envelope mesh whose blended
+// matrix names a joint that has no inverse bind matrix: the joint description's pointer at 0x38 is
+// what the loader copies into the joint, and a blend of two or more joints multiplies by it for
+// every joint in the list. A console stops the same way, so such a costume is never handed to the
+// game. A list whose first weight is 1 takes the game's unchecked path and is left alone here.
+// Only a certain defect refuses: anything that points outside the data block is skipped, since the
+// other checks own malformed files.
+bool envelopes_bound(const std::vector<uint8_t>& bytes, uint32_t size, const std::vector<uint32_t>& relocated,
+                     uint32_t root, std::string* error) {
+  constexpr uint32_t kNoMeshFlags = 0x20u | 0x4000u;   // particle and spline joints keep other data in the mesh slot
+  constexpr size_t kMaxWalk = 65536;                   // against cycles in a broken file
+  std::vector<uint32_t> order;                         // joints depth first (child, then next), as same_tree numbers them
+  std::vector<uint32_t> stack{root};
+  while (!stack.empty() && order.size() <= 1024) {
+    const uint32_t x = stack.back(); stack.pop_back();
+    if (x + 0x40ull > size) continue;
+    order.push_back(x);
+    const uint8_t* p = &bytes[0x20ull + x];
+    if (is_pointer(relocated, x + 0x0C)) stack.push_back(be32(p + 0x0C));
+    if (is_pointer(relocated, x + 0x08)) stack.push_back(be32(p + 0x08));
+  }
+  if (order.size() > 1024) return true;
+  size_t walked = 0;
+  for (const uint32_t x : order) {
+    const uint8_t* p = &bytes[0x20ull + x];
+    if ((be32(p + 4) & kNoMeshFlags) || !is_pointer(relocated, x + 0x10)) continue;
+    for (uint32_t d = be32(p + 0x10);; d = be32(&bytes[0x20ull + d + 0x04])) {          // display objects
+      if (d + 0x10ull > size || ++walked > kMaxWalk) break;
+      if (is_pointer(relocated, d + 0x0C))
+        for (uint32_t o = be32(&bytes[0x20ull + d + 0x0C]);; o = be32(&bytes[0x20ull + o + 0x04])) {   // polygon objects
+          if (o + 0x18ull > size || ++walked > kMaxWalk) break;
+          const uint8_t* po = &bytes[0x20ull + o];
+          const uint32_t type = (((uint32_t)po[0x0C] << 8) | po[0x0D]) & 0x3000u;
+          if (type == 0x2000u && is_pointer(relocated, o + 0x14)) {
+            // The envelope list: pointers to arrays of (joint, weight), each ended by a slot that is no pointer.
+            for (uint64_t slot = be32(po + 0x14); slot + 4 <= size && is_pointer(relocated, (uint32_t)slot); slot += 4) {
+              if (++walked > kMaxWalk) break;
+              const uint64_t first = be32(&bytes[(size_t)(0x20ull + slot)]);
+              if (first + 8 > size || !is_pointer(relocated, (uint32_t)first)) continue;
+              const uint32_t bits = be32(&bytes[(size_t)(0x20ull + first + 4)]);
+              float weight; std::memcpy(&weight, &bits, 4);
+              if (weight >= 1.0f - FLT_EPSILON) continue;
+              for (uint64_t e = first; e + 8 <= size && is_pointer(relocated, (uint32_t)e); e += 8) {
+                if (++walked > kMaxWalk) break;
+                const uint32_t joint = be32(&bytes[(size_t)(0x20ull + e)]);
+                if (joint + 0x40ull > size || is_pointer(relocated, joint + 0x38)) continue;
+                const auto found = std::find(order.begin(), order.end(), joint);
+                *error = "A mesh is skinned to bone " +
+                         (found == order.end() ? "at " + std::to_string(joint) : std::to_string(found - order.begin())) +
+                         ", which has no bind matrix: the game would stop when it is drawn.";
+                return false;
+              }
+            }
+          }
+          if (!is_pointer(relocated, o + 0x04)) break;
+        }
+      if (!is_pointer(relocated, d + 0x04)) break;
+    }
+  }
+  return true;
+}
 }  // namespace skeleton
 
 }  // namespace
+
+// Public: whether the game can draw this costume at all. Offline and online alike, unlike the
+// skeleton comparison below: a file that fails here stops the game on any machine.
+bool costume_draw_safe(const std::vector<uint8_t>& candidate, std::string* error) {
+  std::string local; if (!error) error = &local;
+  uint32_t size = 0, root = 0;
+  std::vector<uint32_t> relocated;
+  std::string unused;
+  // No skeleton root or a truncated file is some other check's finding, not a drawing defect.
+  if (!skeleton::share_joint_root(candidate, &size, &root, &relocated, &unused) || size + 0x20ull > candidate.size()) return true;
+  return skeleton::envelopes_bound(candidate, size, relocated, root, error);
+}
 
 // Public: the Source Port asks the same question about a live pack's costume files.
 bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
@@ -2982,6 +3058,10 @@ std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::st
     if (!dat.ok || dat.target_path != asset.info.target_path) {
       *error = asset.info.name + ": stored DAT identity no longer matches its catalog target."; return {};
     }
+    // Every way a costume reaches the game passes here, so one that the game cannot draw is
+    // refused offline too and the slot keeps the standard costume.
+    std::string defect;
+    if (!costume_draw_safe(bytes, &defect)) { *error = asset.info.name + ": " + defect; return {}; }
   } else if (asset.info.kind == "stage_visual" || asset.info.kind == "effect_visual") {
     VisualLayout layout;
     if (!parse_visual_layout(bytes, &layout, error)) {
@@ -3474,6 +3554,9 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
       asset.online_known = true;
       asset.online_ok = costume_skeleton_matches(retail, bytes, &detail);
       asset.online_note = online_reason_short(detail);
+      // A costume the game cannot draw stays listed with its reason, and the load refuses it
+      // everywhere (load_runtime_asset_locked); the online verdict carries the reason to the list.
+      if (!costume_draw_safe(bytes, &detail)) { asset.online_ok = false; asset.online_note = online_reason_short(detail); }
     }
     asset.info.kind = "character_costume";
     asset.info.target_path = dat.target_path;
@@ -4798,6 +4881,32 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
   g_message = next->assets == 0 ? "No selected cosmetic matched this ISO." :
               std::to_string(next->assets) + " cosmetic override(s) active for this launch.";
   for (const auto& issue : runtime_errors) g_message += " " + issue;
+  // The game loads every stage and fighter file whole into heaps of a fixed size, laid out for the
+  // disc's own files (lbheap.c: 5.0 MB and 6.3 MB of main memory), and stops with
+  // `assertion "memp_kouho"` in lbmemory.c when a file finds no room there. That includes the
+  // title screen, which preloads a random demo stage and four fighters. Nothing is changed here:
+  // a file that grew by more than this is named, so the stop has a cause the player can act on.
+  constexpr size_t kLargeGrowth = 1u << 20;
+  size_t large = 0, growth = 0;
+  std::string largest; size_t largest_growth = 0;
+  for (const auto& served : next->by_start) {
+    const RuntimeAsset& item = served.second;
+    if (!item.bytes || item.bytes->size() <= (size_t)item.vanilla_size + kLargeGrowth) continue;
+    const size_t grew = item.bytes->size() - item.vanilla_size;
+    ++large; growth += grew;
+    if (grew > largest_growth) { largest_growth = grew; largest = item.target_path; }
+    host::log("cosmetics: %s is %.1f MB larger than the game's file; the game's memory is laid out for the original",
+              item.target_path.c_str(), grew / 1048576.0);
+  }
+  if (large) {
+    char text[256];
+    std::snprintf(text, sizeof text, " %zu mod file(s) are much larger than the game's own (%.1f MB more in all, the most in %s). "
+                  "The game can stop with a memory error when it loads them; if it does, turn the largest ones off.",
+                  large, growth / 1048576.0, largest.c_str());
+    g_message += text;
+    host::log("cosmetics: %zu oversized override(s), %.1f MB over the originals; a lbmemory.c stop on load means one did not fit",
+              large, growth / 1048576.0);
+  }
 }
 
 void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
