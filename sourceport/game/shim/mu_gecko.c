@@ -62,6 +62,19 @@ int mu_general_codes(void)
     return general_codes || mu_online_codes() != 0;
 }
 
+/* General Codes, "Unlock All Characters and Stages" and the two message codes that go with it
+ * ("Disable Special Messages", "Disable Trophy Messages"). The player's "Unlock everything" setting
+ * switches them off offline, and then the save file decides, as on a console. A network session
+ * always has them: both players must be able to pick any fighter and stage. */
+int mu_unlock_all(void)
+{
+    unsigned int mu_game_options3(void);
+    if (!mu_general_codes())
+        return 0;
+    return !(mu_game_options3() & 0x80000000u /* MU_GAME_OPTION3_LOCKED_CONTENT */) ||
+           mu_online_codes() != 0;
+}
+
 /* Slippi's optional "Widescreen 16:9" code, one MU_NATIVE branch per patched site with the code's own
  * values: cobj.c (camera aspect x 320/219 as it loads), lbbgflash.c (flash camera), ftdrawcommon.c
  * (fighters in the added sides draw), ifmagnify.c (bubbles) and ifnametag.c (tags). Read live, so like
@@ -397,5 +410,29 @@ __declspec(dllexport) int mu_user_gecko_write(unsigned int addr, const unsigned 
         return 0;
     for (k = 0; k < len; ++k)
         t->native[gecko_native_offset(t->layout, addr - t->addr + k)] = bytes[k];
+    return 1;
+}
+
+/* The same for a read: `len` bytes of the native variable at console address `addr`, handed back
+ * big-endian. The same three results as the write. */
+__declspec(dllexport) int mu_user_gecko_read(unsigned int addr, unsigned char* bytes, unsigned int len)
+{
+    unsigned int lo = 0, hi = sizeof gecko_targets / sizeof gecko_targets[0], k;
+    const MuGeckoTarget* t;
+
+    if (mu_online_active())
+        return -1;
+    while (hi - lo > 1) {
+        unsigned int mid = lo + (hi - lo) / 2;
+        if (gecko_targets[mid].addr <= addr)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    t = &gecko_targets[lo];
+    if (len == 0 || addr < t->addr || addr - t->addr >= t->size || len > t->size - (addr - t->addr))
+        return 0;
+    for (k = 0; k < len; ++k)
+        bytes[k] = t->native[gecko_native_offset(t->layout, addr - t->addr + k)];
     return 1;
 }

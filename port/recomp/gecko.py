@@ -28,6 +28,17 @@ RUNTIME_OPTIONAL = {
     "Optional: Lagless FoD": "lagless_fod",
 }
 
+# Lines of Slippi's own table whose instruction the port translates both ways: the line stays where
+# it is in the table (so the table, its caves and a replay's code list do not move) and the compiled
+# game runs the patched instruction only while the named flag is on. "Unlock All Characters and
+# Stages": off, the save file decides what is unlocked. The host keeps the flag on in a network match.
+TWO_WAY_TEXT = {addr: "unlock_all" for addr in (
+    0x8015EE98, 0x8015EDDC, 0x80164B14, 0x801648F4, 0x8015EE4C, 0x8015EE14, 0x8015D968, 0x8015D9D8,
+    0x8017229C, 0x801737B0, 0x80164658, 0x801644E8, 0x8030490C, 0x803044F0,
+    # "Disable Special Messages" and "Disable Trophy Messages" (a return at each function's entry):
+    # with locked content the game's own unlock notices are shown again.
+    0x8015D94C, 0x8015D984)}
+
 # Codes the port adds to the table itself (they are not in Slippi's code list). Each is always in
 # the table, at the end of the part that is never cut, so its cave and data sit in RAM at a fixed
 # address; its hook is translated two ways and runs only while the named flag is on.
@@ -64,6 +75,24 @@ PORT_CODES = [
         (0xC202A104, 0x00000003),
         (0x38000000, 0x901B00A4),   # li r0,0; stw r0,164(r27)
         (0x901B00A8, 0xC07B00AC),   # stw r0,168(r27); lfs f3,172(r27) (the replaced instruction)
+        (0x60000000, 0x00000000)]), # nop; (branch back)
+    # Results screen after an offline VS match. Slippi's "Salty Runback" (C21A5B14, in
+    # gmVsMelee_ExitVs) sets the next state in r27 to 2 when A and B are held and to 0 (character
+    # select) otherwise. These two keep the game's own next state for the second case: the first
+    # packs it (r4 at entry) above the low byte of r5, which the original function copies into
+    # nonvolatile r28. The low byte remains the sudden-death state. If a mod replaces the save
+    # hook, r28's high byte stays zero, so the remaining restore hook keeps its CSS flow rather
+    # than reading uninitialized stack data. The second restores it when the code chose 0.
+    # A and B still replay the match. The host keeps the
+    # flag off in a network match, where the game goes to character select as the code has it.
+    ("Port: Results Screen Offline, keep the next state", "offline_results", [
+        (0xC21A5B00, 0x00000002),
+        (0x3B640000, 0x5085442E),   # addi r27,r4,0; rlwimi r5,r4,8,16,23
+        (0x60000000, 0x00000000)]), # nop; (branch back)
+    ("Port: Results Screen Offline, use it", "offline_results", [
+        (0xC21A5B18, 0x00000003),
+        (0x2C1B0000, 0x40820008),   # cmpwi r27,0; bne +8
+        (0x579BC63E, 0x881F0064),   # rlwinm r27,r28,24,24,31; lbz r0,100(r31)
         (0x60000000, 0x00000000)]), # nop; (branch back)
 ]
 

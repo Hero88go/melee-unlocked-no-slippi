@@ -4,8 +4,10 @@
 #include "audio.h"
 #include "cosmetic_mods.h"
 #include "mod_profile.h"
+#include "user_gecko.h"
 #include "memory_range.h"
 #include "guest_heap_trace.h"
+#include "disc_fst_paths.h"
 #include <windows.h>
 #include <bcrypt.h>
 #include "guest_registry.h"
@@ -23,7 +25,9 @@
 #include "slippi_online.h"
 #endif
 #include "gecko_data.h"
+#include "render_options.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -57,6 +61,11 @@ static FILE* g_state_digest = nullptr;
 static uint32_t g_fst_offset, g_fst_size, g_fst_max;
 static std::deque<Completion> g_completions;
 static bool g_pe_finish_pending = false;
+// Where boot put the disc's file table. The game's own lookups use its cached copy; the host's
+// used to read the pointer back from low memory (80000038), which a stray guest store through a
+// near-null pointer can overwrite (addresses are masked into RAM, so it lands there instead of
+// faulting as on a console). The walk then ran off into garbage: "host access outside RAM".
+static uint32_t g_fst_addr = 0;
 static bool g_pe_token_pending = false;
 static uint16_t g_pe_token = 0;
 static uint32_t g_retraces = 0;
@@ -389,6 +398,29 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
   }
   return false;
 }
+
+namespace {
+const std::vector<uint8_t>* disc_path_fst() {
+  static std::vector<uint8_t> fst;
+  static std::mutex mutex;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (fst.empty() && g_fst_size) {
+    fst.resize(g_fst_size);
+    if (!disc_read(g_fst_offset, fst.data(), g_fst_size)) fst.clear();
+  }
+  return fst.empty() ? nullptr : &fst;
+}
+}  // namespace
+
+bool disc_find_path_by_offset(uint32_t offset, std::string* path) {
+  const auto* fst = disc_path_fst();
+  return fst && disc_fst::path_by_offset(*fst, offset, path);
+}
+
+bool disc_music_paths(std::vector<std::string>* paths) {
+  const auto* fst = disc_path_fst();
+  return fst && disc_fst::music_paths(*fst, paths);
+}
 uint32_t disc_fst_max_size() { return g_fst_max; }
 
 // ---------------- boot ----------------
@@ -575,13 +607,16 @@ static void load_dol_from_disc() {
 // already contains these patches; this keeps RAM identical to what the game expects to read.
 static void apply_gecko_boot_ram() {
   std::memcpy(ptr(0x80001800u, (uint32_t)gecko::codehandler_bin_size), gecko::codehandler_bin, gecko::codehandler_bin_size);
+  mark_ram_write(0x80001800u, (uint32_t)gecko::codehandler_bin_size);
   wr32(0x80001D6Cu, 0x4E800020u);   // USB Gecko I/O replaced by blr, as Slippi does
   wr32(0x80001800u, 0xD01F1BADu);   // handler magic
   std::memcpy(ptr(0x800028B8u, (uint32_t)gecko::bootloader_gct_size), gecko::bootloader_gct, gecko::bootloader_gct_size);
+  mark_ram_write(0x800028B8u, (uint32_t)gecko::bootloader_gct_size);
   wr8(0x80001807u, 1);              // codes on
   for (size_t i = 0; i < gecko::boot_writes_count; ++i) {
     const gecko::Write& w = gecko::boot_writes[i];
     std::memcpy(ptr(w.addr, w.size), w.data, w.size);
+    mark_ram_write(w.addr, w.size);
   }
   for (size_t i = 0; i < gecko::boot_hooks_count; ++i) {
     const gecko::HookInstall& h = gecko::boot_hooks[i];
@@ -622,6 +657,8 @@ static void apply_mod_code() {
   if (g_mod_clean && gecko::codehandler_bin_size) {
     std::memset(ptr(0x80001800u, (uint32_t)gecko::codehandler_bin_size), 0, gecko::codehandler_bin_size);
     std::memset(ptr(0x800028B8u, (uint32_t)gecko::bootloader_gct_size), 0, gecko::bootloader_gct_size);
+    mark_ram_write(0x80001800u, (uint32_t)gecko::codehandler_bin_size);
+    mark_ram_write(0x800028B8u, (uint32_t)gecko::bootloader_gct_size);
     const uint32_t text_start = g_text_ranges.empty() ? 0x80003100u : g_text_ranges.front().first;
     ppc::disable_dispatch_range(0x80001800u, std::min(text_start, 0x80001800u + (uint32_t)gecko::codehandler_bin_size));
     ppc::disable_dispatch_range(0x800028B8u, std::min(text_start, 0x800028B8u + (uint32_t)gecko::bootloader_gct_size));
@@ -958,9 +995,14 @@ void boot_setup() {
   cosmetics::apply_to_fst(ptr(fst_addr, g_fst_size), g_fst_size);
   cosmetics::set_online_probe([] { return ram != nullptr && rd8(0x80479D30) == 8; });
   wr32(0x80000038, fst_addr);
+  g_fst_addr = fst_addr;
   wr32(0x8000003C, g_fst_max);
-  wr32(0x80000034, fst_addr);                        // arena hi
-  log("boot: FST %u bytes at %08X (max %X), arena hi %08X", g_fst_size, fst_addr, g_fst_max, fst_addr);
+  const uint32_t gecko_bytes = user_gecko::static_memory_required();
+  const uint32_t gecko_address = gecko_bytes ? (fst_addr - gecko_bytes) & ~0xFFFFu : 0;
+  wr32(0x80000034, gecko_bytes ? gecko_address : fst_addr); // arena hi
+  if (gecko_bytes) user_gecko::static_memory_start(gecko_address, fst_addr - gecko_address);
+  log("boot: FST %u bytes at %08X (max %X), arena hi %08X", g_fst_size, fst_addr, g_fst_max,
+      gecko_bytes ? gecko_address : fst_addr);
   install_gecko_boot();
   if (g_mod_disc) apply_mod_code();
   // MELEE_TEST_INTERPRET=<addr>[,<addr>...]: run those functions in the interpreter on any disc, so
@@ -1009,6 +1051,21 @@ void set_after_guest_call(void (*hook)(uint32_t addr)) { g_after_guest_call = ho
 // ---------------- events ----------------
 void post_completion(Completion fn) { g_completions.push_back(std::move(fn)); }
 void set_pe_finish_pending() { g_pe_finish_pending = true; }
+// The file table's address for the host's own lookups. Says so once, and puts the pointer back,
+// when low memory no longer holds it.
+uint32_t disc_fst_addr() {
+  if (!g_fst_addr) return rd32(0x80000038u);
+  const uint32_t now = rd32(0x80000038u);
+  if (now != g_fst_addr) {
+    static bool told = false;
+    if (!told) {
+      told = true;
+      log("low memory: the file table pointer at 80000038 was overwritten (now %08X, was %08X); put back", now, g_fst_addr);
+    }
+    wr32(0x80000038u, g_fst_addr);
+  }
+  return g_fst_addr;
+}
 void set_pe_token_pending(uint16_t token) { g_pe_token = token; g_pe_token_pending = true; }
 bool exit_requested() { return g_exit; }
 void request_exit(int code) { g_exit_code.store(code); g_exit.store(true); }
@@ -1222,7 +1279,62 @@ static uint32_t saved_language(ppc::Context& c) {
 static void lang_get_saved(ppc::Context& c, uint8_t*) { c.r[3] = saved_language(c); }
 static void lang_is_saved_jp(ppc::Context& c, uint8_t*) { c.r[3] = saved_language(c) == 0 ? 1u : 0u; }
 static void lang_is_saved_us(ppc::Context& c, uint8_t*) { c.r[3] = saved_language(c) == 1 ? 1u : 0u; }
+// The title demo preloads four fighters and a stage into a heap of a fixed size (heap 4,
+// 0x64B400 bytes), sized for the original files: the largest original set leaves about 113 KB.
+// A stage skin a megabyte or more larger than the file it replaces no longer fits with most
+// fighter draws, and the game stops with lbmemory.c:233 ("memp_kouho") on the title screen.
+// gm_801BF684 (801BF684) is where gm_SetupTitleDemo stores the stage it drew (a stage kind, u16 at
+// 8049E554), after the fighters. When that stage's file cannot fit beside the largest original
+// fighter set plus the growth of the installed fighter skins, another stage of the game's own
+// demo list (803B7808, 0x1D entries) that does fit is stored in its place. With original files
+// every stage fits, so nothing changes for a game without large skins.
+static int32_t fst_find_path(const char* path);
+static uint32_t demo_stage_file_size(uint32_t stkind) {
+  if (stkind >= 0x11Eu) return 0;                              // stage_id_map has 0x11E entries of 12 bytes
+  const uint32_t grkind = rd32(0x803E9960u + stkind * 12);
+  if (grkind >= 0x6Fu) return 0;                               // stage_datas: 0x1BC bytes of pointers
+  const uint32_t data = rd32(0x803DFEDCu + grkind * 4);
+  if (!try_ptr(data, 12)) return 0;
+  const uint32_t name = rd32(data + 8);
+  if (!try_ptr(name, 1)) return 0;
+  const std::string path = cstr(name, 64);
+  const int32_t entry = fst_find_path(path.c_str());
+  if (entry <= 0) return 0;
+  return rd32(disc_fst_addr() + (uint32_t)entry * 12 + 8);
+}
+static void title_demo_store_stage(ppc::Context& c, uint8_t*) {
+  constexpr uint32_t kHeap = 0x64B400u, kOriginalFighters = 4170176u, kStageSlot = 0x8049E554u;
+  uint32_t stage = c.r[3] & 0xFFFFu;
+  // MELEE_TEST_DEMO_GROWTH=<bytes>: test runs only (hidden runs never open the GameCube adapter),
+  // stands in for installed skins that much larger than their originals.
+  static const uint32_t test_growth = [] {
+    const char* v = std::getenv("MELEE_TEST_DEMO_GROWTH");
+    return v && options.no_gc_adapter ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u;
+  }();
+  const uint64_t fighters = (uint64_t)kOriginalFighters + cosmetics::largest_fighter_growth() + test_growth;
+  const auto fits = [&](uint32_t kind) {
+    const uint32_t size = demo_stage_file_size(kind);
+    return size != 0 && ((uint64_t)((size + 31u) & ~31u) + 0x60u + fighters) <= kHeap;
+  };
+  // A mod disc has its own stage tables (and its own guard): the stage is stored as drawn.
+  if (!g_mod_disc && demo_stage_file_size(stage) != 0 && !fits(stage)) {
+    for (uint32_t i = 0; i < 0x1Du; ++i) {
+      const uint32_t other = rd16(0x803B7808u + i * 2);
+      if (other == stage || !fits(other)) continue;
+      static bool told = false;
+      if (!told) {
+        told = true;
+        log("mods: the title demo drew a stage whose skin does not fit its memory with the fighters; another stage plays in the demo");
+      }
+      stage = other;
+      break;
+    }
+  }
+  wr16(kStageSlot, (uint16_t)stage);
+}
 void install_language_override() {
+  if (!ppc::redirect_to_host(0x801BF684u, title_demo_store_stage))
+    log("mods: the title demo's stage store could not be replaced; large stage skins can stop the title screen");
   const bool get = ppc::redirect_to_host(0x8000ADF4u, lang_get_saved);
   const bool jp = ppc::redirect_to_host(0x8000AE58u, lang_is_saved_jp);
   const bool us = ppc::redirect_to_host(0x8000AE90u, lang_is_saved_us);
@@ -1237,7 +1349,18 @@ void install_language_override() {
 // the same change is made in RAM and the function runs from there (a few calls per frame).
 // Only when the instruction is the game's own: a mod that changed this function is left alone.
 void clean_mode_music_frame();
+// The two switches over lines of Slippi's code set that the game was translated both ways for
+// (recomp/gecko.py: TWO_WAY_TEXT and the "Results Screen Offline" port codes). A network session,
+// from matchmaking to the end of the match, always plays as Slippi does: everything unlocked and no
+// results screen. Offline the player's "Unlock everything" setting decides the first, and the
+// results screen is shown.
+static void apply_code_switches() {
+  const bool online = slippi::online::session_mode() >= 0;
+  gecko::option_unlock_all = online || gx::RenderOptions::live_unlock_all();
+  gecko::option_offline_results = !online;
+}
 void apply_wide_fighter_draw() {
+  apply_code_switches();
   clean_mode_music_frame();
   constexpr uint32_t kSite = 0x80086B24u, kBranch = 0x4182000Cu, kNop = 0x60000000u;
   static bool live = false;
@@ -1331,7 +1454,7 @@ void apply_low_poly_fighters() {
 void dvd_fast_open_checked(ppc::Context& c, uint8_t*) {
   uint32_t entry = c.r[3];
   const uint32_t info = c.r[4];
-  const uint32_t fst = rd32(0x80000038);
+  const uint32_t fst = disc_fst_addr();
   const uint32_t count = fst ? rd32(fst + 8) : 0;
   auto is_file = [&](uint32_t e) { return e < count && rd8(fst + e * 12) == 0; };
   if (!is_file(entry) && (int32_t)entry < 0) {
@@ -1359,7 +1482,7 @@ void dvd_fast_open_checked(ppc::Context& c, uint8_t*) {
 // The game's own name search (DVDConvertPathToEntrynum), rule for rule, without the 8.3 name check:
 // from the root or the given directory, one path part at a time, letters compared without case.
 static int32_t fst_find_path(const char* path) {
-  const uint32_t fst = rd32(0x80000038);
+  const uint32_t fst = disc_fst_addr();
   const uint32_t count = fst ? rd32(fst + 8) : 0;
   if (!count) return -1;
   const uint32_t strings = fst + count * 12;
@@ -1395,12 +1518,83 @@ static int32_t fst_find_path(const char* path) {
     path = end + 1;
   }
 }
+// Where a code list's branch at `at` leads (the code it put in place of that instruction), or 0 when
+// the instruction there is not a plain branch.
+static uint32_t mod_code_behind(uint32_t at) {
+  const uint32_t first = rd32(at);
+  if ((first & 0xFC000003u) != 0x48000000u) return 0;
+  const uint32_t code = at + (uint32_t)((int32_t)(first << 6) >> 6);
+  return code >= 0x80000000u && code < 0x81800000u ? code : 0;
+}
+// m-ex replaces gm_80160438 (the results animation file of a fighter) with a read of its own table:
+//   lwz r4,N(r2) ; mulli r3,r3,4 ; lwzx r3,r3,r4 ; blr
+// A row can name a file the disc does not have (ACE 2.0.0: Crazy Hand's row names GmRstMGk.dat). The game
+// itself has no file for such a fighter and its results screen then shows no model for it (a NULL row).
+// Rows without a file are cleared when the results screen opens its own file, before any fighter is
+// asked for. Nothing is read or written unless that exact code is behind the function's entry, so the
+// retail game and a mod without this table are left alone. A cleared row is skipped from then on.
+//
+// A row can also name a file the disc has for a fighter that has no results animation in any file
+// (ACE 2.0.0: Master Hand's row names Mario's file). m-ex then looks up the fighter's symbol name, an
+// empty string, and stops ("fighter N has no symbol"). Such a row is cleared too, but only when both of
+// m-ex's reads are confirmed the same way: the fighter id table (Player_80036E20: lwz r3,8(r2)) and the
+// symbol name table with its stop (ftDemo_SetArchiveData: lwz r4,0x78(r2)).
+static void clear_result_rows_without_file(ppc::Context& c) {
+  auto in_ram = [](uint32_t a, uint32_t n) { return a >= 0x80000000u && a < 0x81800000u && try_ptr(a, n) != nullptr; };
+  const uint32_t code = mod_code_behind(0x80160438u);
+  if (!code || !in_ram(code, 16) || (rd32(code) & 0xFFFF0000u) != 0x80820000u || rd32(code + 4) != 0x1C630004u ||
+      rd32(code + 8) != 0x7C63202Eu || rd32(code + 12) != 0x4E800020u) return;
+  const uint32_t holder = c.r[2] + (uint32_t)(int32_t)(int16_t)(rd32(code) & 0xFFFFu);
+  if (!in_ram(holder, 4)) return;
+  const uint32_t table = rd32(holder);
+  // The fighter id of a row (3 bytes a row, the id first) and the symbol names of a fighter (4 a fighter,
+  // the results one first), both 0 unless m-ex's code for them is in place.
+  uint32_t ids = 0, symbols = 0;
+  const uint32_t id_code = mod_code_behind(0x80036E34u), symbol_code = mod_code_behind(0x800BEBC8u);
+  if (id_code && in_ram(id_code, 8) && rd32(id_code) == 0x80620008u && rd32(id_code + 4) == 0x3803FFE0u &&
+      rd32(0x80036E24u) == 0x1CC30003u && rd32(0x80036E3Cu) == 0x7FE03214u && rd32(0x80036E50u) == 0x887F0020u &&
+      symbol_code && in_ram(symbol_code, 0x48) && rd32(symbol_code + 0x10) == 0x7C7D1B78u &&
+      rd32(symbol_code + 0x18) == 0x80820078u && rd32(symbol_code + 0x1C) == 0x1C1D0004u &&
+      rd32(symbol_code + 0x20) == 0x7C84002Eu && rd32(symbol_code + 0x24) == 0x1C050004u &&
+      rd32(symbol_code + 0x28) == 0x7F84002Eu && rd32(symbol_code + 0x40) == 0x2C030000u &&
+      rd32(symbol_code + 0x44) == 0x4182000Cu && in_ram(c.r[2] + 8u, 4) && in_ram(c.r[2] + 0x78u, 4)) {
+    ids = rd32(c.r[2] + 8u);
+    symbols = rd32(c.r[2] + 0x78u);
+  }
+  for (uint32_t row = 0; row < 256; ++row) {
+    if (!in_ram(table + row * 4, 4)) break;
+    const uint32_t at = rd32(table + row * 4);
+    if (!at) continue;
+    if (!in_ram(at, 16)) break;
+    const char* name = (const char*)try_ptr(at, 16);
+    if (!*name) continue;                                                    // a fighter without an entry
+    if (_strnicmp(name, "GmRstM", 6) != 0 || !std::memchr(name, '\0', 16)) break;   // past the table
+    if (fst_find_path(name) < 0) {
+      log("mods: results table row for character %u named a file this disc does not have (%s); cleared", row, name);
+      wr32(table + row * 4, 0);
+      continue;
+    }
+    if (!ids || !symbols || !in_ram(ids + row * 3, 1)) continue;
+    const uint32_t fighter = rd8(ids + row * 3);
+    if (fighter >= 0x80u || !in_ram(symbols + fighter * 4, 4)) continue;
+    const uint32_t names = rd32(symbols + fighter * 4);
+    if (!in_ram(names, 4) || !in_ram(rd32(names), 1) || rd8(rd32(names)) != 0) continue;
+    log("mods: results table row for character %u named a file (%s) for fighter %u, which has no results animation in any file; cleared", row, name, fighter);
+    wr32(table + row * 4, 0);
+  }
+}
 // A mod can send the results screen for a fighter that has no results animation on any disc (Master
 // Hand, picked from a mod's debug menu, wins a match: GmRstMMh.dat). The game stops on the missing
 // file. In a mod session a results animation the disc does not have opens as Mario's instead.
 void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
   const char* path = (const char*)try_ptr(c.r[3], 1);
   if (!path) { c.r[3] = 0xFFFFFFFFu; return; }
+  {
+    // The results screen asks for its own file before any fighter's (see clear_result_rows_without_file).
+    const char* slash0 = std::strrchr(path, '/');
+    const char* base0 = slash0 ? slash0 + 1 : path;
+    if (!_stricmp(base0, "GmRst.usd") || !_stricmp(base0, "GmRst.dat")) clear_result_rows_without_file(c);
+  }
   int32_t entry = fst_find_path(path);
   if (entry < 0) {
     const char* slash = std::strrchr(path, '/');
@@ -1446,7 +1640,7 @@ void clean_mode_music_frame() {
   }
   if (id != playing_id) {
     if (trace && playing_id) { watched_id = playing_id; watched_frames = 0; }
-    const uint32_t entry = rd32(0x804D7764u), fst = rd32(0x80000038u);
+    const uint32_t entry = rd32(0x804D7764u), fst = disc_fst_addr();
     const uint32_t count = fst ? rd32(fst + 8) : 0;
     if (entry > 0 && entry < count && rd8(fst + entry * 12) == 0) {
       slippi::jukebox::start_song(rd32(fst + entry * 12 + 4), rd32(fst + entry * 12 + 8));
@@ -1482,10 +1676,79 @@ void clean_mode_music_frame() {
   const int volume = (int)std::clamp(level * (float)(rd32(0x804D3884u) * 2u), 0.0f, 254.0f);
   if (volume != last) { last = volume; slippi::jukebox::set_melee_volume((uint8_t)volume); }
 }
+// The title demo preloads four fighters and a stage into two heaps of a fixed size, sized for the 26
+// fighters of the retail disc. A disc that draws the demo from a larger roster and keeps those sizes
+// (ACE 2.0.0) stops with `assertion "memp_kouho"` in lbmemory.c when the draw is too large. At the entry
+// of gm_PreloadTitleDemo (801BF3F8) the four picks are at 8049E548 (costumes at +4). A pick that is not
+// one of the 26 becomes one of them, worked out from the pick itself (no random number is drawn); those
+// always fit. 0x21 is the game's "no fighter" and loads nothing, so it stays. The retail game never has
+// another value here, and this hook is only installed for a mod disc.
+static void title_demo_fit(ppc::Context&) {
+  constexpr uint32_t kPicks = 0x8049E548u;
+  constexpr uint8_t kRetailFighters = 0x1Au, kNoFighter = 0x21u, kZelda = 0x12u, kSheik = 0x13u;
+  uint8_t pick[4];
+  for (int i = 0; i < 4; ++i) pick[i] = rd8(kPicks + i);
+  for (int i = 0; i < 4; ++i) {
+    if (pick[i] < kRetailFighters || pick[i] == kNoFighter) continue;
+    // As the game's own draw: no fighter twice, and never Zelda and Sheik together.
+    auto taken = [&](uint8_t v) {
+      for (int j = 0; j < 4; ++j)
+        if (j != i && (pick[j] == v || (v == kZelda && pick[j] == kSheik) || (v == kSheik && pick[j] == kZelda))) return true;
+      return false;
+    };
+    uint8_t v = (uint8_t)(pick[i] % kRetailFighters);
+    while (taken(v)) v = (uint8_t)((v + 1u) % kRetailFighters);
+    log("mods: the title demo drew fighter %u, which its memory was not sized for; fighter %u of the original game plays in its place", (unsigned)pick[i], (unsigned)v);
+    pick[i] = v;
+    wr8(kPicks + i, v);
+    wr8(kPicks + 4 + i, 0);
+  }
+}
+// The same stop, should it still happen (a disc with larger files of the 26, a stage too large): one
+// line with the heap that had no room and the title demo's draw, so a report names the cause. At the
+// entry of __assert (80388220) called from lbMemory_80014FC8 for line 233, r24 is the heap's handle and
+// r30 the size asked, rounded up to 32 bytes (see trace_guest_heap_assert, the test switch's full trace).
+static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t caller) {
+  static bool told = false;   // the entry hook and the panic itself can both come here for one stop
+  if (told) return;
+  told = true;
+  const auto heap = guest_heap_trace::inspect(handle, heap_trace_read32);
+  log("heap: no room in a fixed heap: handle %08X, %08X..%08X (%u bytes), asked %u, free %u, largest gap %u, %u blocks%s, asked by %08X",
+      handle, heap.lo, heap.hi, heap.hi - heap.lo, rounded, heap.free, heap.largest_gap, (unsigned)heap.count,
+      heap.complete ? "" : " (list not read to its end)", caller);
+  constexpr uint32_t kPicks = 0x8049E548u;
+  if (try_ptr(kPicks, 0x10))
+    log("heap: title demo draw: fighters %02X %02X %02X %02X, costumes %02X %02X %02X %02X, stage %04X", rd8(kPicks), rd8(kPicks + 1),
+        rd8(kPicks + 2), rd8(kPicks + 3), rd8(kPicks + 4), rd8(kPicks + 5), rd8(kPicks + 6), rd8(kPicks + 7), rd16(kPicks + 0xC));
+  log_flush();
+}
+static void report_heap_stop(ppc::Context& c) {
+  if (c.lr != 0x80015098u || c.r[4] != 233u || !heap_trace_literal(c.r[3], "lbmemory.c")) return;
+  uint32_t caller = 0;
+  if (c.r[1] > 0xFFFFFFC3u || !heap_trace_read32(c.r[1] + 60u, caller)) caller = 0;
+  report_heap_stop_lines(c.r[24], c.r[30], caller);
+}
+// The same two lines for any disc, from the panic itself (no entry hook is installed for the retail
+// disc). At the entry of OSPanic the stack holds the frame of the panic helper (80388278), then
+// __assert's, where the size asked was saved (+0x18), then the allocator's, which holds __assert's
+// return address (+4) and, above its 0x38 bytes, its own caller's. r24 is still the heap's handle:
+// neither function in between uses it. Anything that does not match this exactly prints nothing.
+void report_heap_panic(ppc::Context& c) {
+  uint32_t helper = c.r[1], assert_frame = 0, allocator = 0, back = 0, rounded = 0, caller = 0;
+  if (c.lr != 0x80388300u || !heap_trace_read32(helper, assert_frame) || !heap_trace_read32(assert_frame, allocator) ||
+      allocator > 0xFFFFFFC3u || !heap_trace_read32(allocator + 4u, back) || back != 0x80015098u ||
+      assert_frame > 0xFFFFFFE7u || !heap_trace_read32(assert_frame + 0x18u, rounded)) return;
+  if (!heap_trace_read32(allocator + 60u, caller)) caller = 0;
+  report_heap_stop_lines(c.r[24], rounded, caller);
+}
 void install_mod_disc_guards() {
   if (!mod_disc_active()) return;
   if (!ppc::redirect_to_host(0x80337C60u, dvd_fast_open_checked)) log("mods: DVDFastOpen keeps the game's own code");
   if (!ppc::redirect_to_host(0x8033796Cu, dvd_convert_path_checked)) log("mods: the file name search keeps the game's own code");
+  // MELEE_TEST_NO_DEMO_FIT (tests only, hidden and headless runs): the draw is left as the disc made
+  // it, to show the stop and its report.
+  if (!(std::getenv("MELEE_TEST_NO_DEMO_FIT") && options.no_gc_adapter)) ppc::add_entry_hook(0x801BF3F8u, title_demo_fit);
+  ppc::add_entry_hook(0x80388220u, report_heap_stop);
 }
 void install_audio_pacing() {
   if (ppc::Fn previous = ppc::set_hook(0x80019894u, pad_queue_count_paced)) g_pad_queue_count = previous;
@@ -2012,7 +2275,30 @@ void wait_event() {
     g_pe_finish_pending = false;
     // PE_ISR (0xCC00100A): finish interrupt status bit 3.
     g_mmio[0x100B] |= 0x08;
+    // The game's draw-done callback (HSD_VIDrawDoneXFB, 803762C4) stops with video.c:722 when the
+    // frame buffer it is told about is not waiting for it. A console delivers this interrupt right
+    // after the frame; here it waits for the next sleep, and with Slippi's lag reduction lines (in
+    // the replay viewer they ride with the widescreen code) the buffer index is -1 and two frames'
+    // signals can meet the same slot: the viewer stopped at the end of every replay. Then the
+    // callback is skipped for this one delivery: the wait flag still clears and GX still sees its
+    // frame done, only the status change and the assert are left out, as Slippi's own
+    // ForceNoVideoAssert does online. Display state only (outside the rollback snapshot).
+    constexpr uint32_t kCallbackSlot = 0x804C1F68u, kArgSlot = 0x804C1F64u, kStatus0 = 0x804C1DDCu;
+    constexpr uint32_t kDrawDoneXfb = 0x803762C4u, kWaitDone = 4u;
+    uint32_t callback = 0;
+    bool skip = false;
+    if (!game_image && ram && rd32(kCallbackSlot) == kDrawDoneXfb) {
+      const int32_t arg = (int32_t)rd32(kArgSlot);
+      if (arg >= -1 && arg <= 2 && rd32(kStatus0 + (uint32_t)(arg * 0x60)) != kWaitDone) {
+        skip = true;
+        callback = rd32(kCallbackSlot);
+        static bool told = false;
+        if (!told) { told = true; log("video: a draw-done signal arrived for frame buffer %d, which was not waiting for it; skipped", arg); }
+        wr32(kCallbackSlot, 0);
+      }
+    }
     deliver_interrupt(19);  // __OS_INTERRUPT_PI_PE_FINISH
+    if (skip) wr32(kCallbackSlot, callback);
     return;
   }
   if (g_pe_token_pending) {

@@ -1,0 +1,17 @@
+/build*/
+/dist/
+/run-*/
+/port/generated/
+__pycache__/
+*.py[cod]
+*.log
+/User/
+/Cards/
+/Replays/
+/Mods/
+/CosmeticMods/
+/shadercache/
+/port-settings.ini
+/launcher.ini
+/GeckoCodes.ini
+/lobby-*.json

@@ -7,6 +7,10 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include "host.h"
+#ifndef MELEE_SOURCE_PORT
+#include "static_gecko.h"
+#endif
+#include "ram_translator.h"
 #include "gecko_data.h"
 #include "render_observer.h"
 #ifdef MELEE_NO_SLIPPI
@@ -18,6 +22,12 @@
 #include "slippi_online.h"
 #include "slippi_net.h"
 #include "jukebox.h"
+#ifdef MELEE_SOURCE_PORT
+// The Source Port host with the Slippi layer also runs the project's own peer-to-peer session when
+// the command line asks for one (--p2p-*); with no such option nothing of it is used.
+#include "netplay_state.h"
+#include "source_p2p.h"
+#endif
 #endif
 #include "audio.h"
 #include "guest_registry.h"
@@ -704,6 +714,9 @@ static void trace_root_fobj_entry(ppc::Context& context) {
 namespace ppc { void init_dispatch(); }
 
 static void usage() {
+#ifndef MELEE_SOURCE_PORT
+  std::printf("Static engine: [--mod-base-iso <retail.iso>] [--ram-translator|--no-ram-translator] (default: off)\n");
+#endif
 #ifdef MELEE_NO_SLIPPI   // this build is melee_source.exe; it has no lobby code, replay or recording options
 #define USAGE_EXE "melee_source"
 #else
@@ -729,7 +742,7 @@ static void usage() {
               "           [--mod-profile <name>] [--mod-dir <disc files directory>]... [--mod-iso <patched ISO>]... [--mod-gci <save.gci>]...\n");
 #endif
 #endif
-#ifdef MELEE_NO_SLIPPI
+#ifdef MELEE_SOURCE_PORT   // melee_source.exe, with or without the Slippi layer
   std::printf("           [--p2p-port <local udp port> --p2p-peer <ip:port>... --p2p-slot 0|1 --p2p-chars <id>[/<color>]:<id>[/<color>]\n"
               "            --p2p-stage <id> --p2p-seed <hex> --p2p-delay 1..15 --p2p-identity <file> --p2p-expect <64 hex identity key>\n"
               "            --p2p-result <file> --p2p-names <a>:<b> --p2p-connect-seconds <1..600> --p2p-games <n, 0 = no limit>]\n"
@@ -1263,6 +1276,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 int main(int argc, char** argv) { return guarded_main(argc, argv); }
 
 static int melee_main(int argc, char** argv) {
+#ifndef MELEE_SOURCE_PORT
+  user_gecko::install_static_runtime();
+#endif
   if (!cpu_has_avx2()) {
     const char* msg = "Melee Unlocked needs a CPU with AVX2 (Intel Haswell 2013 or newer, AMD Ryzen or newer). This CPU does not support it.";
     std::fprintf(stderr, "%s\n", msg);
@@ -1293,10 +1309,14 @@ static int melee_main(int argc, char** argv) {
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
   }
   host::Options& o = host::options;
+  bool ram_translator = false;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
   bool scripted = false, allow_matchmaking = false;   // automated runs stay off Slippi's servers
   std::string card_self_test_dir;
   std::string replay_arg;   // Source engine --replay
+#if defined(MELEE_SOURCE_PORT) && !defined(MELEE_NO_SLIPPI)
+  bool online_test_arg = false;   // --online-test was given: a Slippi test match, never with --p2p-*
+#endif
   std::string cosmetic_import, cosmetic_scan_disc, cosmetic_select;
   bool cosmetic_enable_effects = false, cosmetic_restore = false, cosmetic_status = false;
   gx::RenderOptions gfx;
@@ -1377,6 +1397,8 @@ static int melee_main(int argc, char** argv) {
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
     if (a == "--iso") o.iso = next();
     else if (a == "--mod-base-iso") o.mod_base_iso = next();   // Static Recomp: --iso is a mod disc, this is the vanilla one
+    else if (a == "--ram-translator") ram_translator = true;
+    else if (a == "--no-ram-translator") ram_translator = false;
     else if (a == "--state-trace") o.state_trace = next();
     else if (a == "--state-digest") o.state_digest = next();
     else if (a == "--frames") o.frames = (uint32_t)std::strtoul(next(), nullptr, 0);
@@ -1499,6 +1521,11 @@ static int melee_main(int argc, char** argv) {
     // A peer-to-peer match at boot (source_p2p.cpp); every --p2p-* option takes one value.
     else if (a.rfind("--p2p-", 0) == 0) { if (!source_p2p::option(a, next())) { usage(); return 2; } }
 #else
+#ifdef MELEE_SOURCE_PORT
+    // A peer-to-peer match at boot (source_p2p.cpp); every --p2p-* option takes one value. Giving
+    // --p2p-port and --p2p-peer is what picks that session over Slippi's for this run.
+    else if (a.rfind("--p2p-", 0) == 0) { if (!source_p2p::option(a, next())) { usage(); return 2; } }
+#endif
     else if (a == "--user-dir") slippi::online::config().user_dir = next();
     else if (a == "--lobby-direct") {
       std::string code = next();
@@ -1615,7 +1642,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--slippi-menus") { const std::string v = next();
       if (v != "on" && v != "off") { std::fprintf(stderr, "--slippi-menus on|off\n"); return 2; }
       source_port::set_slippi_menus(v == "on"); }
-    else if (a == "--online-test") { if (!source_port::set_online_test(next())) {
+    else if (a == "--online-test") { online_test_arg = true; if (!source_port::set_online_test(next())) {
       std::fprintf(stderr, "--online-test direct|unranked|teams[:<character>[:<color>]] (with --local-peer)\n"); return 2; } }
 #endif
 #endif
@@ -1630,6 +1657,19 @@ static int melee_main(int argc, char** argv) {
   (void)allow_matchmaking;
   if (!source_p2p::check()) { usage(); return 2; }
 #else
+#ifdef MELEE_SOURCE_PORT
+  if (!source_p2p::check()) { usage(); return 2; }
+  // One session per run. A peer-to-peer match and a Slippi match would both answer the game's
+  // session commands, and a replay has no live session at all: refuse the mix before anything starts.
+  if (source_p2p::requested()) {
+    const char* other = !slippi::online::config().lobby_code.empty() ? "--lobby-direct"
+                        : online_test_arg ? "--online-test" : !replay_arg.empty() ? "--replay" : nullptr;
+    if (other) {
+      std::fprintf(stderr, "--p2p-* starts a peer-to-peer match and cannot be combined with %s\n", other);
+      return 2;
+    }
+  }
+#endif
   if ((hidden || headless || scripted) && !allow_matchmaking) slippi::Matchmaking::server_allowed = false;
   if (slippi::Matchmaking::local_peer.test_stage >= 0) {
     const int stage = slippi::Matchmaking::local_peer.test_stage;
@@ -1843,17 +1883,15 @@ static int melee_main(int argc, char** argv) {
     host::discord::shutdown();
     host::gcadapter_shutdown();
     host::switchpro_shutdown();
-#ifdef MELEE_NO_SLIPPI
+    // Both Source Port builds; nothing happens when no --p2p-* session was started.
     source_p2p::shutdown();   // the result file once more, then the session's thread and socket
-#endif
     slippi::shutdown();
     host::log_flush();   // the process ends with ExitProcess right after this (source_host.cpp guarded)
   };
-#ifdef MELEE_NO_SLIPPI
   // With --p2p-port and --p2p-peer: the session starts connecting now, and the game boots straight
-  // into the match scene and waits there for it.
+  // into the match scene and waits there for it. Both Source Port builds; without those options
+  // this returns at once and the run is what it was.
   source_p2p::start(hidden || headless || scripted);
-#endif
   if (g_profile) g_profiler.start();   // the native game runs on this thread; shutdown() reports
   const int source_code = source_port::run(shutdown);
   shutdown(source_code);
@@ -1922,6 +1960,7 @@ static int melee_main(int argc, char** argv) {
   }
 #endif
   ppc::init_dispatch();
+  ppc::configure_ram_translator(ram_translator);
 #ifndef MELEE_SOURCE_PORT
   install_rng_seed_hook();
   host::install_audio_pacing();
@@ -1981,6 +2020,10 @@ static int melee_main(int argc, char** argv) {
   slippi::shutdown();
   { uint64_t calls = 0, insns = 0; ppc::interpreter_stats(&calls, &insns);
     if (calls) host::log("interpreter: %llu calls into RAM-resident code, %llu instructions", (unsigned long long)calls, (unsigned long long)insns); }
+  { const auto s = ppc::ram_translator_stats();
+    if (s.translated || s.refused) host::log("RAM translator totals: native=%llu refused=%llu hits=%llu invalidated=%llu resumed=%llu cache=%zu bytes=%zu",
+      (unsigned long long)s.translated, (unsigned long long)s.refused, (unsigned long long)s.hits,
+      (unsigned long long)s.invalidated, (unsigned long long)s.resumed, s.entries, s.native_bytes); }
   if (ppc::g_computed_return_checks || ppc::g_resumed_returns)
     host::log("gecko: adjusted-return checks %llu, resumed %llu (UCF Shield Drop and the like)",
               (unsigned long long)ppc::g_computed_return_checks, (unsigned long long)ppc::g_resumed_returns);

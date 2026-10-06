@@ -72,7 +72,8 @@ int mu_offscreen_damage_zone(Fighter* fp)
 void mu_refresh_part_matrices(Fighter* fp)
 {
     u32 n, i;
-    if (fp->parts == NULL || fp->kind >= 33) {
+    if (fp->parts == NULL || (unsigned) fp->kind >= FT_KIND_TABLE_MAX ||
+        DP(ftPartsTable[fp->kind]) == NULL) {
         return;
     }
     n = DP(ftPartsTable[fp->kind])->parts_num;

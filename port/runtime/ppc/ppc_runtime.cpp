@@ -1,6 +1,7 @@
 // Runtime services for recompiled Gekko code: dispatch, MMIO routing, SPRs, PSQ, fres/frsqrte.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ppc.h"
+#include "ram_translator.h"
 #include "guest_registry.h"
 #include "host.h"
 #ifndef NOMINMAX
@@ -75,6 +76,7 @@ uint64_t g_computed_return_checks = 0; // see ppc.h
 // Covers all of RAM: Gecko caves live below .text (bootloader at 0x800028B8) and in the heap
 // (the main code table the game loads), and their subroutines are called through pointers.
 void init_dispatch() {
+  reset_ram_translator();
   g_dispatch.assign(RAM_SIZE / 4, nullptr);
   for (size_t i = 0; i < guest::fn_table_count; ++i) {
     const auto& e = guest::fn_table[i];
@@ -87,6 +89,21 @@ Fn lookup(uint32_t addr) {
   uint32_t off = addr - RAM_BASE;
   if (g_dispatch.empty() || off >= RAM_SIZE || (addr & 3)) return nullptr;
   return g_dispatch[off / 4];
+}
+
+// The RAM translator plans native branches against what lookup() and runs_from_ram() answer. It
+// turns the watch on with its switch; off (the default, and always on the Source engine) the
+// calls below do nothing. On, a change in [lo, hi) is recorded as a write to those blocks, which
+// is how a running translation and the cache already learn that their code must be looked at.
+bool g_ram_dispatch_watch = false;
+uint32_t g_ram_dispatch_epoch = 0;
+static void dispatch_changed(uint32_t lo, uint32_t hi) {
+  if (!g_ram_dispatch_watch) return;
+  ++g_ram_dispatch_epoch;
+  lo &= ~3u;
+  const uint32_t off = lo - RAM_BASE;
+  if (hi <= lo || off >= RAM_SIZE) return;
+  mark_ram_write(lo, std::min<uint32_t>(hi - lo, RAM_SIZE - off));
 }
 
 // Replaces the function called at `addr` and hands back what was there, so a host implementation can
@@ -105,6 +122,7 @@ Fn set_hook(uint32_t addr, Fn fn) {
   if (g_dispatch.empty() || off >= RAM_SIZE || (addr & 3)) return nullptr;
   Fn previous = g_dispatch[off / 4];
   g_dispatch[off / 4] = fn;
+  if (previous != fn) dispatch_changed(addr, addr + 4);
   return previous;
 }
 
@@ -140,11 +158,13 @@ static std::vector<uint8_t> g_inline_map;
 static void mark_inline(uint32_t lo, uint32_t hi) {
   if (g_inline_map.empty()) g_inline_map.assign(RAM_SIZE / 4, 0);
   for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 1; }
+  dispatch_changed(lo, hi);
 }
 void add_ram_code_range(uint32_t lo, uint32_t hi) { mark_inline(lo, hi); }
 void remove_ram_code_range(uint32_t lo, uint32_t hi) {
   if (g_inline_map.empty()) return;
   for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 0; }
+  dispatch_changed(lo, hi);
 }
 
 bool runs_from_ram(uint32_t addr) {
@@ -171,6 +191,7 @@ void disable_dispatch_range(uint32_t lo, uint32_t hi) {
       g_dispatch[off / 4] = nullptr;
     }
   }
+  dispatch_changed(lo, hi);
 }
 
 void restore_dispatch_range(uint32_t lo, uint32_t hi) {
@@ -181,12 +202,13 @@ void restore_dispatch_range(uint32_t lo, uint32_t hi) {
     g_dispatch[(entry.first - RAM_BASE) / 4] = entry.second;
     g_disabled_dispatch.erase(g_disabled_dispatch.begin() + (ptrdiff_t)i);
   }
+  dispatch_changed(lo, hi);
 }
 
 void interp_entry(Context& c, uint8_t* m, uint32_t addr) {
   const uint32_t start = c.entry ? c.entry : addr;   // a mid-function thunk asked for this entry
   c.entry = 0;
-  interpret(c, m, start);
+  if (!try_translate_ram(c, m, start)) interpret(c, m, start);
 }
 
 bool redirect_to_interpreter(uint32_t addr) {
@@ -242,8 +264,10 @@ bool undo_redirect(uint32_t addr) {
   g_redirected.erase(at);
   g_redirect_saved.erase(saved);
   uint32_t lo = 0, hi = 0;
-  if (function_bounds(addr, &lo, &hi) && !g_inline_map.empty())
+  if (function_bounds(addr, &lo, &hi) && !g_inline_map.empty()) {
     for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 0; }
+    dispatch_changed(lo, hi);
+  }
   return true;   // (the trampoline slot stays allocated; 32 bytes)
 }
 
@@ -422,7 +446,7 @@ void call(Context& c, uint8_t* m, uint32_t addr) {
   // (seen after thousands of rollbacks in a long online session).
   CallDepthScope scope{c};
   if (fn) fn(c, m);
-  else interpret(c, m, addr);   // code that only exists in RAM (dat-loaded routines)
+  else if (!try_translate_ram(c, m, addr)) interpret(c, m, addr); // dat-loaded routines
 }
 
 uint64_t g_enter_count = 0;

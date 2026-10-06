@@ -1,13 +1,23 @@
 // ENet host for one peer: dial all candidates at once, accept what arrives, keep one path; plus the LAN beacon.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "peer_connector.h"
+#include "nat_discovery.h"   // only its inline address classes; nothing of nat_discovery.cpp is linked from here
 #include "session_security.h"
 #include <enet/enet.h>
+#include <cstdarg>
 #include <cstdio>
 #include <mutex>
 
+#if defined(_WIN32) && !defined(SIO_UDP_CONNRESET)
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+
 namespace mu_net {
 namespace {
+
+constexpr uint64_t kPunchEveryUs = 100000;        // the candidates
+constexpr int kPredictedEveryRounds = 3;          // the predicted ports: every third round, 300 ms
+constexpr uint64_t kPredictAfterUs = 1000000;     // and only once the plain addresses had a second to answer
 
 bool enet_ready() {
   // ENet's start is process-wide (it starts Winsock). Other parts of the game may start it too;
@@ -48,22 +58,151 @@ std::string address_text(const ENetAddress& address) {
   return text;
 }
 
+// The address as a number a.b.c.d reads as (ENet keeps it in network byte order).
+uint32_t host_order(enet_uint32 address) {
+  uint8_t bytes[4];
+  std::memcpy(bytes, &address, 4);
+  return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) | ((uint32_t)bytes[2] << 8) | bytes[3];
+}
+
+std::string address_port_text(const ENetAddress& address) {
+  return address_text(address) + ":" + std::to_string(address.port);
+}
+
 const char kBeaconDomain[] = "MeleeUnlockedNet1 beacon";
 const uint8_t kBeaconMagic[4] = {'M', 'U', 'N', 'B'};
 
 }  // namespace
 
+std::vector<Endpoint> predicted_endpoints(const std::vector<Endpoint>& candidates) {
+  std::vector<Endpoint> out;
+  auto known = [&](const std::string& address, uint16_t port) {
+    for (const auto& c : candidates) if (c.port == port && c.address == address) return true;
+    for (const auto& p : out) if (p.port == port && p.address == address) return true;
+    return false;
+  };
+  static const int steps[4] = {1, 2, 3, -1};
+  size_t seen = 0;
+  for (const auto& c : candidates) {
+    if (++seen > (size_t)kMaxCandidates) break;   // a longer list is refused by connect() anyway
+    enet_uint32 address = 0;
+    if (c.port == 0 || !parse_ipv4(c.address, address) || !ip_is_public(host_order(address))) continue;
+    for (int step : steps) {
+      const int port = (int)c.port + step;
+      if (port < 1 || port > 65535 || known(c.address, (uint16_t)port)) continue;
+      if ((int)out.size() >= kMaxPredicted) return out;
+      Endpoint e;
+      e.address = c.address;
+      e.port = (uint16_t)port;
+      out.push_back(e);
+    }
+  }
+  return out;
+}
+
 struct PeerConnector::Impl {
-  struct Path { ENetPeer* peer = nullptr; bool up = false; bool outgoing = false; };
+  // candidate: which of the addresses given this path was dialed to; -1 for one that arrived.
+  struct Path { ENetPeer* peer = nullptr; bool up = false; bool outgoing = false; int candidate = -1; };
   struct Packet { int path; uint8_t channel; std::vector<uint8_t> bytes; };
+  // Datagrams that arrived before a path was chosen, by where they came from. Counted on the raw
+  // socket, in front of ENet, so the one-byte punch and a connect that goes unanswered both count.
+  struct Heard {
+    uint32_t datagrams = 0;
+    uint32_t exact_public = 0, exact_private = 0;   // from an address that was dialed
+    uint32_t other_port = 0;                        // from a dialed IP address, but another port
+    uint32_t predicted = 0;                         // ... of those, from a port that was guessed
+    uint32_t strangers = 0;                         // from anywhere else
+    uint16_t other_port_seen = 0;
+  };
   ENetHost* host = nullptr;
   Path paths[kMaxPaths];
   ENetAddress candidates[kMaxCandidates];
   int candidate_count = 0;
+  ENetAddress predicted[kMaxPredicted];
+  int predicted_count = 0;
+  bool public_candidate = false;
   int pinned = -1;    // the path the session chose
   int current = -1;   // the path of the packet being delivered
-  uint64_t deadline_us = 0, next_punch_us = 0;
+  uint64_t started_us = 0, deadline_us = 0, next_punch_us = 0;
+  uint32_t punch_round = 0;
+  Heard heard;
   std::vector<Packet> inbox;
+  std::function<void(const char*)> log_line;
+  int log_budget = 0;   // lines left for this connection: a flood of connects must not become a flood of log
+
+  // ENet hands every datagram to on_datagram before it reads it. The host has no slot for a
+  // pointer of ours, so poll() names its connector here for the length of its own call, on its
+  // own thread.
+  static inline thread_local Impl* receiving = nullptr;
+  static int ENET_CALLBACK on_datagram(ENetHost* from_host, ENetEvent*) {
+    Impl* impl = receiving;
+    if (impl && impl->host == from_host) impl->note(from_host->receivedAddress);
+    return 0;   // never consumed: ENet reads it as before (and drops the one-byte punch itself)
+  }
+
+  void log(const char* fmt, ...) {
+    if (!log_line || log_budget <= 0) return;
+    --log_budget;
+    char line[320];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(line, sizeof line, fmt, args);
+    va_end(args);
+    try { log_line(line); } catch (...) {}
+  }
+  // Which candidate an address is: its index, or -1.
+  int candidate_of(const ENetAddress& a) const {
+    for (int i = 0; i < candidate_count; ++i) if (candidates[i].host == a.host && candidates[i].port == a.port) return i;
+    return -1;
+  }
+  bool candidate_ip(const ENetAddress& a) const {
+    for (int i = 0; i < candidate_count; ++i) if (candidates[i].host == a.host) return true;
+    return false;
+  }
+  bool predicted_port(const ENetAddress& a) const {
+    for (int i = 0; i < predicted_count; ++i) if (predicted[i].host == a.host && predicted[i].port == a.port) return true;
+    return false;
+  }
+  void note(const ENetAddress& from) {
+    if (pinned >= 0) return;
+    auto count = [](uint32_t& n) { if (n != 0xFFFFFFFFu) ++n; };
+    count(heard.datagrams);
+    if (candidate_of(from) >= 0) {
+      count(ip_is_public(host_order(from.host)) ? heard.exact_public : heard.exact_private);
+    } else if (candidate_ip(from)) {
+      count(heard.other_port);
+      heard.other_port_seen = from.port;
+      if (predicted_port(from)) count(heard.predicted);
+    } else {
+      count(heard.strangers);
+    }
+  }
+  ConnectDiagnosis diagnose() const {
+    if (heard.exact_public) return ConnectDiagnosis::OneWay;
+    if (heard.other_port) return ConnectDiagnosis::PortChanges;
+    if (heard.exact_private) return public_candidate ? ConnectDiagnosis::LanOnly : ConnectDiagnosis::OneWay;
+    return ConnectDiagnosis::NoReply;
+  }
+  // An address in words: which of the addresses given it is, and who dialed.
+  std::string describe(const ENetAddress& a, bool outgoing) const {
+    std::string text = address_port_text(a);
+    const int index = candidate_of(a);
+    if (index >= 0) text += ", address " + std::to_string(index + 1) + " of the " + std::to_string(candidate_count) + " given";
+    else if (predicted_port(a)) text += ", a neighbouring port that was guessed";
+    else if (candidate_ip(a)) text += ", a port the other player's router chose that was not in the list";
+    else text += ", an address that was not in the list";
+    text += outgoing ? ", dialed from here" : ", dialed from the other side";
+    return text;
+  }
+  bool dial(int slot, int candidate) {
+    ENetPeer* peer = enet_host_connect(host, &candidates[candidate], kChannelCount, 0);
+    if (!peer) return false;
+    paths[slot].peer = peer;
+    paths[slot].outgoing = true;
+    paths[slot].up = false;
+    paths[slot].candidate = candidate;
+    return true;
+  }
 
   int find(const ENetPeer* peer) const {
     for (int i = 0; i < kMaxPaths; ++i) if (paths[i].peer == peer) return i;
@@ -82,6 +221,8 @@ struct PeerConnector::Impl {
 PeerConnector::PeerConnector() : impl_(new Impl) {}
 PeerConnector::~PeerConnector() { close(); delete impl_; }
 
+void PeerConnector::set_log(std::function<void(const char*)> log) { impl_->log_line = std::move(log); }
+
 bool PeerConnector::open(uint16_t local_port, std::string* error) {
   close();
   auto fail = [&](ConnectFailure f) { state_ = ConnectState::Failed; failure_ = f; if (error) *error = failure_text(); return false; };
@@ -91,10 +232,22 @@ bool PeerConnector::open(uint16_t local_port, std::string* error) {
   address.port = local_port;
   impl_->host = enet_host_create(&address, kMaxPaths, kChannelCount, 0, 0);
   if (!impl_->host) return fail(ConnectFailure::Bind);
+  impl_->host->intercept = &Impl::on_datagram;
+#ifdef _WIN32
+  {
+    // Windows reports an ICMP "port unreachable" for a datagram sent earlier as an error on the
+    // next receive, and ENet then stops reading for that call. The punch sends to addresses that
+    // may well answer that way (a LAN address of another network, a guessed port), so it is off.
+    BOOL report = FALSE;
+    DWORD returned = 0;
+    WSAIoctl(impl_->host->socket, SIO_UDP_CONNRESET, &report, sizeof report, nullptr, 0, &returned, nullptr, nullptr);
+  }
+#endif
   ENetAddress bound;
   local_port_ = enet_socket_get_address(impl_->host->socket, &bound) == 0 ? bound.port : local_port;
   state_ = ConnectState::Idle;
   failure_ = ConnectFailure::None;
+  diagnosis_ = ConnectDiagnosis::None;
   return true;
 }
 
@@ -103,25 +256,42 @@ bool PeerConnector::connect(const std::vector<Endpoint>& candidates, uint64_t no
   if (!impl_->host) return fail(ConnectFailure::Bind);
   if ((int)candidates.size() > kMaxCandidates) return fail(ConnectFailure::TooMany);
   impl_->candidate_count = 0;
+  impl_->predicted_count = 0;
+  impl_->public_candidate = false;
   for (const auto& c : candidates) {
     ENetAddress address;
     if (c.port == 0 || !parse_ipv4(c.address, address.host)) return fail(ConnectFailure::BadAddress);
     address.port = c.port;
+    if (ip_is_public(host_order(address.host))) impl_->public_candidate = true;
     impl_->candidates[impl_->candidate_count++] = address;
+  }
+  for (const auto& p : predicted_endpoints(candidates)) {
+    ENetAddress address;
+    if (impl_->predicted_count >= kMaxPredicted || !parse_ipv4(p.address, address.host)) break;
+    address.port = p.port;
+    impl_->predicted[impl_->predicted_count++] = address;
   }
   for (int i = 0; i < impl_->candidate_count; ++i) {
     const int slot = impl_->free_slot();
     if (slot < 0) break;
-    ENetPeer* peer = enet_host_connect(impl_->host, &impl_->candidates[i], kChannelCount, 0);
-    if (!peer) continue;
-    impl_->paths[slot].peer = peer;
-    impl_->paths[slot].outgoing = true;
-    impl_->paths[slot].up = false;
+    impl_->dial(slot, i);
   }
-  impl_->deadline_us = now_us + limit_us_;
+  // The limit is the session's too, and the session counts from a moment earlier. This side gives
+  // up a little sooner (a twentieth of the limit, at most 100 ms) so that its own account of what
+  // was heard is the failure the player reads, not the session's general one.
+  const uint64_t margin = limit_us_ / 20 < 100000 ? limit_us_ / 20 : 100000;
+  impl_->started_us = now_us;
+  impl_->deadline_us = now_us + limit_us_ - margin;
   impl_->next_punch_us = now_us;
+  impl_->punch_round = 0;
+  impl_->heard = Impl::Heard();
+  impl_->log_budget = 24;
   state_ = ConnectState::Connecting;
   failure_ = ConnectFailure::None;
+  diagnosis_ = ConnectDiagnosis::None;
+  if (impl_->predicted_count)
+    impl_->log("dialing %d address%s; %d neighbouring port%s will be tried too", impl_->candidate_count,
+               impl_->candidate_count == 1 ? "" : "es", impl_->predicted_count, impl_->predicted_count == 1 ? "" : "s");
   enet_host_flush(impl_->host);
   return true;
 }
@@ -134,8 +304,17 @@ const char* PeerConnector::failure_text() const {
     case ConnectFailure::BadAddress: return "The other player's address is not a usable IP address and port";
     case ConnectFailure::TooMany: return "Too many addresses were given for the other player";
     case ConnectFailure::TimedOut:
-      return "The other player could not be reached. A router or firewall on one side blocks direct connections; "
-             "forwarding the game's UDP port on either side usually fixes it";
+      // Each at most 120 characters: that is what the game's message box holds.
+      switch (diagnosis_) {
+        case ConnectDiagnosis::LanOnly:
+          return "The other player could not be reached over the internet: replies came only from a local network address.";
+        case ConnectDiagnosis::PortChanges:
+          return "The other player could not be reached: their router uses a different port for every destination (symmetric NAT).";
+        case ConnectDiagnosis::OneWay:
+          return "The other player's packets arrive here but the connection did not complete: a firewall blocks one direction.";
+        default:
+          return "The other player could not be reached: no reply from any address. A router or firewall is blocking the game's UDP port.";
+      }
     case ConnectFailure::PeerClosed: return "The connection to the other player was lost";
   }
   return "The connection failed";
@@ -145,6 +324,12 @@ std::string PeerConnector::peer_address() const {
   if (impl_->pinned < 0 || !impl_->paths[impl_->pinned].peer) return {};
   const ENetAddress& a = impl_->paths[impl_->pinned].peer->address;
   return address_text(a) + ":" + std::to_string(a.port);
+}
+
+std::string PeerConnector::path_text() const {
+  if (impl_->pinned < 0 || !impl_->paths[impl_->pinned].peer) return {};
+  const Impl::Path& path = impl_->paths[impl_->pinned];
+  return impl_->describe(path.peer->address, path.outgoing);
 }
 
 bool PeerConnector::connected() const {
@@ -178,6 +363,11 @@ bool PeerConnector::send(uint8_t channel, const uint8_t* data, size_t size, bool
 void PeerConnector::poll(uint64_t now_us, const Receiver& on_packet) {
   if (!impl_->host) return;
   ENetEvent event;
+  // For on_datagram, which runs inside enet_host_service on this thread.
+  struct Receiving {
+    explicit Receiving(Impl* impl) { Impl::receiving = impl; }
+    ~Receiving() { Impl::receiving = nullptr; }
+  } receiving(impl_);
   // A bounded number of events a call: a flood cannot hold the caller, the rest waits in the
   // socket buffer (or is lost there, which the protocol is built to survive).
   for (int budget = 256; budget > 0 && enet_host_service(impl_->host, &event, 0) > 0; --budget) {
@@ -190,12 +380,15 @@ void PeerConnector::poll(uint64_t now_us, const Receiver& on_packet) {
           if (slot < 0) { enet_peer_disconnect_now(event.peer, 0); break; }
           impl_->paths[slot].peer = event.peer;
           impl_->paths[slot].outgoing = false;
+          impl_->paths[slot].candidate = -1;
         } else if (impl_->pinned >= 0 && slot != impl_->pinned) {
           enet_peer_disconnect_now(event.peer, 0);
           impl_->paths[slot] = Impl::Path();
           break;
         }
         impl_->paths[slot].up = true;
+        impl_->log("path up after %.1f s: %s", (double)(now_us - impl_->started_us) / 1e6,
+                   impl_->describe(event.peer->address, impl_->paths[slot].outgoing).c_str());
         ++generation_;
         // Dead-path detection in 4 to 8 s, a ping every 250 ms, and no throttling of unreliable
         // sends: a dropped COMMIT costs a rollback, which is worse than the bandwidth it saves.
@@ -225,8 +418,16 @@ void PeerConnector::poll(uint64_t now_us, const Receiver& on_packet) {
       case ENET_EVENT_TYPE_DISCONNECT: {
         const int slot = impl_->find(event.peer);
         if (slot < 0) break;
+        const Impl::Path gone = impl_->paths[slot];
         impl_->paths[slot] = Impl::Path();
         if (slot == impl_->pinned) { state_ = ConnectState::Failed; failure_ = ConnectFailure::PeerClosed; }
+        // A dial that never got an answer: ENet gives up on it after about 15 s (its repeats are
+        // 0.5, 1, 2, 4 and 8 s apart). The other game may only just have started, so while no
+        // path is chosen the same address is dialed again. The other side's half-open end of the
+        // old dial, if it had one, ran out on the same schedule, so its slots do not fill up.
+        else if (impl_->pinned < 0 && gone.outgoing && !gone.up && gone.candidate >= 0 && gone.candidate < impl_->candidate_count &&
+                 state_ == ConnectState::Connecting)
+          impl_->dial(slot, gone.candidate);
         break;
       }
       default:
@@ -240,16 +441,29 @@ void PeerConnector::poll(uint64_t now_us, const Receiver& on_packet) {
     if (now_us >= impl_->deadline_us) {
       state_ = ConnectState::Failed;
       failure_ = ConnectFailure::TimedOut;
+      diagnosis_ = impl_->diagnose();
+      const Impl::Heard& h = impl_->heard;
+      impl_->log_budget = 2;
+      impl_->log("no path after %.1f s. Datagrams heard: %u (%u from a public address that was dialed, %u from a local one, "
+                 "%u from the other player's address on another port%s, %u from elsewhere)",
+                 (double)(now_us - impl_->started_us) / 1e6, h.datagrams, h.exact_public, h.exact_private, h.other_port,
+                 h.other_port ? (h.predicted ? ", some on a guessed port" : ", none on a guessed port") : "", h.strangers);
+      impl_->log("%s", failure_text());
     } else if (now_us >= impl_->next_punch_us) {
-      // ENet repeats its connect at 0.5, 1.5 and 3.5 s. In between, a one-byte datagram every
-      // 100 ms keeps this side's NAT mapping toward each candidate open, so the peer's connect
-      // gets in whenever it comes. The receiving ENet host drops a one-byte datagram unread.
+      // ENet repeats its connect at 0.5, 1.5, 3.5 and 7.5 s. In between, a one-byte datagram
+      // every 100 ms keeps this side's NAT mapping toward each candidate open, so the peer's
+      // connect gets in whenever it comes. The receiving ENet host drops a one-byte datagram
+      // unread. The predicted ports get the same byte every third round, once the candidates
+      // have had a second: 14 datagrams of one byte in the busiest 100 ms, 6 in the others.
       uint8_t zero = 0;
       ENetBuffer buffer;
       buffer.data = &zero;
       buffer.dataLength = 1;
       for (int i = 0; i < impl_->candidate_count; ++i) enet_socket_send(impl_->host->socket, &impl_->candidates[i], &buffer, 1);
-      impl_->next_punch_us = now_us + 100000;
+      if (impl_->predicted_count && now_us - impl_->started_us >= kPredictAfterUs && impl_->punch_round % kPredictedEveryRounds == 0)
+        for (int i = 0; i < impl_->predicted_count; ++i) enet_socket_send(impl_->host->socket, &impl_->predicted[i], &buffer, 1);
+      ++impl_->punch_round;
+      impl_->next_punch_us = now_us + kPunchEveryUs;
     }
   }
 
@@ -267,6 +481,8 @@ void PeerConnector::poll(uint64_t now_us, const Receiver& on_packet) {
 void PeerConnector::pin_path() {
   if (impl_->current < 0 || impl_->pinned >= 0 || !impl_->host) return;
   impl_->pinned = impl_->current;
+  impl_->log_budget = 1;
+  impl_->log("path chosen: %s", path_text().c_str());
   for (int i = 0; i < kMaxPaths; ++i) {
     auto& path = impl_->paths[i];
     if (i == impl_->pinned || !path.peer) continue;
@@ -299,8 +515,12 @@ void PeerConnector::close() {
   impl_->inbox.clear();
   impl_->pinned = impl_->current = -1;
   impl_->candidate_count = 0;
+  impl_->predicted_count = 0;
+  impl_->public_candidate = false;
+  impl_->heard = Impl::Heard();
   state_ = ConnectState::Idle;
   failure_ = ConnectFailure::None;
+  diagnosis_ = ConnectDiagnosis::None;
   local_port_ = 0;
 }
 

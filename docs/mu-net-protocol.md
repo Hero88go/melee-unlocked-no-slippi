@@ -26,12 +26,18 @@ The protocol is new. It shares no message ids, packet layouts or credentials wit
 
 Each peer knows zero or more candidate endpoints (IPv4 address and UDP port) of the other, from an invitation, the lobby, a LAN beacon or manual entry.
 
-1. Both peers open their UDP port and, at the same moment, start an ENet connection to every candidate of the other peer (at most 6). They also accept ENet connections that arrive.
-2. While no connection is up, each peer sends a one-byte datagram (value 0) to every candidate every 100 ms. This keeps its own NAT mapping open so the other side's connection attempt can get in.
-3. More than one ENet connection between the two peers may come up (typically one dialed by each side). All of them are used for the hello (section 4) until one is chosen (section 5). The others are then closed.
-4. If no connection is up 8 seconds after the start, the attempt fails. There is no relay.
+1. Both peers open their UDP port and start an ENet connection to every candidate of the other peer (at most 6). They also accept ENet connections that arrive, from any address.
+2. While no connection is up, each peer sends a one-byte datagram (value 0) to every candidate every 100 ms. This keeps its own NAT mapping open so the other side's connection attempt can get in. The two peers share no start time: each does this from its own start until a connection is up or its limit passes, so the two windows only have to overlap.
+3. From one second after the start, a peer may send the same one-byte datagram every 300 ms to at most 8 neighbouring ports of the candidates that are on a public address (port +1, +2, +3 and -1 of each, in the order given). No connection is dialed to them. This is for a router that has moved the other peer to the next port; when that peer's connection attempt then arrives from such a port, it is accepted like any other.
+4. An ENet connection attempt that got no answer ends by itself after about 15 seconds. While no connection is chosen, the peer starts it again toward the same candidate.
+5. More than one ENet connection between the two peers may come up (typically one dialed by each side). All of them are used for the hello (section 4) until one is chosen (section 5). The others are then closed.
+6. If no connection is up when the limit passes, the attempt fails. The limit is 8 seconds unless the host sets another (the launcher asks for 45, because the two games start seconds apart). There is no relay.
 
 A peer with no candidates only listens. That is enough when its port is reachable (LAN, or a forwarded port).
+
+An address is never more than a place to send to. Whatever answers there is only accepted as the other player by the handshake of section 4, against the identity key the lobby or the invitation named.
+
+Section 15 says where candidates come from, what keeps the path open, and which networks cannot be connected.
 
 ## 4. Handshake
 
@@ -266,9 +272,10 @@ A session of several games writes one file per game. Each game has a descriptor 
 | Peer frames past own finalized frame | 200 |
 | Replay window, input channel | 64 packets |
 | Candidate endpoints dialed | 6 |
+| Neighbouring ports sent the one-byte datagram | 8 |
 | Simultaneous connections | 8 |
 | Packets handled per pump | 256 events, 512 queued |
-| Connect and handshake | 8 seconds |
+| Connect and handshake | 8 seconds, or the host's own limit (1 to 600 seconds) |
 | Wait for inputs | 7 seconds |
 | Round trip time accepted | up to 2 seconds |
 | Games in one session | 127 |
@@ -326,3 +333,74 @@ The two peers do not begin the next game at the same instant. Until both have, t
 ### 14.4 A revision 0 peer
 
 It ignores INFO, sends none, and never sends NEXT. The revision 1 peer therefore plays one game with it (14.1) and sends it no NEXT. Game 1, its RESULT and its result file are exactly as in revision 0.
+
+## 15. Getting through home routers
+
+Nothing in this section changes a message of sections 2 to 14. It is about which addresses a peer is given as candidates and how the path between two routers is opened and kept open. The code is `port/runtime/mu_net/nat_discovery.*` (used by the launcher's lobby) and `peer_connector.*` (the game). The project runs no server for any of it.
+
+### 15.1 One UDP port for the lobby and the game
+
+The launcher's lobby talks to other launchers from one UDP socket. When a match is agreed, the lobby closes that socket and the game binds the same local port. A router keeps a mapping per local address and port for some time after the last packet (30 seconds on the strictest routers, 2 minutes or more on most), so the game's packets leave through the mapping the lobby's packets made, as long as the game sends its first datagram before that time is up.
+
+This is why the first candidate is always the address and port the other launcher was heard from. The two lobbies were exchanging packets over exactly that pair of addresses a moment ago, so that path is known to work for both routers, including a router that gives each destination its own outside port: the destination is the same one.
+
+### 15.2 Candidates
+
+Each launcher sends its half of a match setup with the accept of a request, or with the acknowledgment of that accept. The fields about addresses:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `port` | number | the game's local UDP port |
+| `lobby` | boolean | true when that port is the lobby's own: the receiver uses the address and port it hears this launcher from |
+| `addrs` | array of at most 4 `"a.b.c.d:port"` | this PC's own addresses (the same network) |
+| `ext` | array of at most 4 `"a.b.c.d:port"`, optional | public addresses this launcher learned for the port (15.3, 15.4) |
+
+A launcher that does not know `ext` ignores it, and a launcher that gets a setup without it dials what it always did. A receiver takes at most 2 entries of `ext`, and only those on a public address.
+
+The receiver builds the list the game dials, at most 6, never one twice, in this order:
+
+1. the address it hears the other launcher from (with `lobby`), or that address with `port`;
+2. the entries of `ext`;
+3. the entries of `addrs`.
+
+### 15.3 STUN
+
+The launcher may send an RFC 5389 Binding Request (20 bytes: type 0x0001, length 0, the magic cookie 0x2112A442, a random 96-bit transaction id, no attributes) from the lobby socket to public STUN servers, and read XOR-MAPPED-ADDRESS (or MAPPED-ADDRESS) from the answer. An answer is matched by its transaction id only; it is not authenticated, and what it says is only ever a candidate.
+
+- It tells the launcher the address and port its router gave the lobby socket, before any other player has been heard from. That goes into `ext` and into the "Connect by address" line.
+- Two servers at two different addresses are asked. When they report different ports, the router gives every destination its own port (often called symmetric NAT), and the launcher can say so before a match is tried.
+- The default servers are `stun.l.google.com:19302`, `stun.cloudflare.com:3478` and `stun1.l.google.com:19302`. The player can name others or switch STUN off. A STUN server learns the player's IP address and nothing else.
+- Names are looked up on a thread of their own and the answers are read as part of the lobby's normal receive loop, so a STUN server that is down or blocked costs nothing: the lobby goes online the same way, with one candidate fewer.
+
+### 15.4 Port mapping
+
+The launcher may ask the home router to send the lobby's UDP port to this PC: first NAT-PMP (RFC 6886, UDP port 5351 of the default gateway), then UPnP IGD (an SSDP search, the device description, `AddPortMapping` on its WANIPConnection or WANPPPConnection service). It asks for a lease of one hour, renews it at half time, and removes the mapping when the launcher closes. A router that only makes mappings without an end gets one without an end, and it stays in the router if the launcher is killed before it can remove it.
+
+- Only a gateway on a private (or carrier-shared) address is asked, and a UPnP device is only talked to at the address its search answer came from.
+- It runs on a thread of its own: under a second when the router has NAT-PMP, up to about ten seconds when the router answers neither. The lobby never waits for it.
+- When it works and the router's outside address is public, that address and the mapped port go first into `ext`. Such a port is open from outside without any punch.
+- When the router's outside address is itself private or carrier-shared, a second router stands in front of it. The mapping is kept but is not named as a candidate.
+
+### 15.5 The punch
+
+Section 3 is the whole of it: both games dial and send the one-byte datagram to every candidate from their own start until a connection is up, a few neighbouring ports are tried as well, and the first connection that carries the signed HELLO and VERIFY is chosen (section 5.2).
+
+When no connection came up, the game says which of these it saw, in one sentence:
+
+- nothing arrived from any of the other player's addresses (a router or firewall drops the game's UDP port);
+- datagrams arrived only from a local network address although public ones were given;
+- datagrams arrived from the other player's address but from a port that was not named (their router uses a different port for every destination);
+- datagrams arrived from an address that was dialed and still no connection completed (one direction is blocked).
+
+### 15.6 Keeping the path open
+
+Once a connection is up, ENet sends a ping on it at least every 250 ms whenever nothing else was sent, for as long as the session exists: before the first game, during a game, and between two games of a session (section 14). A router's mapping is therefore never idle for more than a quarter of a second, well inside the shortest timeouts in use. A connection that hears nothing for 4 to 8 seconds is closed.
+
+### 15.7 What cannot connect
+
+- **Both players behind a router that gives every destination its own port, or behind carrier-grade NAT** (the provider's own router in front of the home router, common on mobile and some fibre and cable lines). Neither side can learn a port the other can reach, the port guesses of section 3 rarely hit, and no router on the path can be asked for a mapping. Such a pair needs a relay, and the project does not run one. If only one of the two is in that position, the match usually connects.
+- **A firewall that drops UDP to or from the game** on either PC or router. Windows asks once, on the first match, to allow the game on the network; a "no" there blocks it.
+- **Two players behind the same public address** (the same home, campus or carrier) whose router does not send a packet for its own outside address back inside. They connect over the `addrs` entries when they are on the same network, and not at all when they are on different networks behind that address.
+- **IPv6 only.** Every address here is IPv4.
+
+In all of these, forwarding the game's UDP port by hand on one of the two routers makes the match connect, when that router has a public address.

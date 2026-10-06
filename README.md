@@ -6,6 +6,19 @@ project's own peer-to-peer online modes. Nothing from the game is included: you 
 
 Not affiliated with, endorsed by, or supported by Nintendo, HAL Laboratory or the Slippi team.
 
+## Current version: 0.8.77
+
+This update brings over the shared game, graphics, input and mod fixes through 0.8.77:
+
+- Fixed Classic Mode team intro portraits.
+- Added an option to pick a random installed stage skin each match.
+- Improved stage-skin compatibility checks and imports.
+- Added offline input delay, expanded native Gecko-code support and an in-game code import button.
+- Included the Adventure/credits crash fixes, unlock fixes, save backups and controller improvements.
+
+The separate P2P Direct and P2P Unranked modes are included. Slippi netcode is excluded from both
+application and game-library builds.
+
 ## What is here
 
 - **The game**: the decompilation of Melee built as a native library (`sourceport/`), with the changes
@@ -22,22 +35,15 @@ Not affiliated with, endorsed by, or supported by Nintendo, HAL Laboratory or th
     to each other directly.
   - **P2P Unranked**: press Find match; searching players are paired automatically by ping.
 
-## State (2026-10-03)
+## Validation (0.8.77)
 
-Checked by automated hidden runs on one PC:
+Checked on one PC:
 
-- From a new save the build boots (save prompt, opening, title), reaches the menus in English and plays
-  an offline VS match. Everything is unlocked, the rules default to 4 stocks and 8 minutes, UCF 0.84 is on.
-- Music and sound effects are the game's own code through the native audio path; a recording of a full
-  run has sound in every part of it. It has not been compared against a console recording.
-- Two instances play a full rollback match from the command line: 0 checksum mismatches and identical
-  signed result files on both sides, at five settings from no lag to 90 ms of added lag with 12 ms of
-  jitter and 3% packet loss. Test: `tools/p2p_pair.py`, fault injection `tools/net_fault_proxy.py`.
-- Both launcher modes run end to end with no human: two launchers started off screen find each other,
-  agree a match (Find match, and request then accept), start their games, play game after game on one
-  connection with 0 checksum mismatches and identical result files, and both lobbies come back
-  afterwards. Test: `tools/p2p_launcher_pair.py` (`--mode direct` for request and accept, `--games n`).
-- Session and lobby unit tests pass.
+- Windows Release builds passed, along with all 21 automated host and native-game tests.
+- The packaged game booted and ran Classic Mode, with both intro portraits rendering correctly.
+- A two-game P2P session passed with 40 ms of added lag, 5 ms jitter and 1% packet loss: no checksum
+  mismatches, and matching result transcripts for both games.
+- P2P Direct and P2P Unranked launcher matches completed, with each lobby reopening on its original port.
 
 How two players behind routers connect: the lobby already has a working UDP path between the two
 launchers. When a match is agreed each launcher closes its lobby socket and its game opens the same

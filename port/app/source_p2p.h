@@ -2,6 +2,9 @@
 // (runtime/mu_net) wired to the game's command channel (see source_p2p.cpp). --p2p-games <n> plays
 // up to n games over the one connection (0: until a player quits); without it the session is one
 // game. Game n after the first writes its result beside --p2p-result as "<name>.g<n><extension>".
+// The Source Port build with the Slippi layer links this too: there the options pick this session
+// over Slippi's for the run, and the process ends when the session has nothing more (exit code 2
+// when no game was played, 0 after one), because that game library has no scene to return to.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <string>

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -128,6 +129,9 @@ namespace detail {
 inline std::atomic<CommandHandler>& handler() { static std::atomic<CommandHandler> h{nullptr}; return h; }
 }  // namespace detail
 inline void set_command_handler(CommandHandler handler) { detail::handler().store(handler); }
+// True once a session installed its handler. The build with the Slippi layer asks this to pick who
+// answers the game's session commands: this session, or Slippi's.
+inline bool has_command_handler() { return detail::handler().load() != nullptr; }
 
 // Without a session every session command gets the answer "there is no match": the game then plays
 // offline (kMatchState) or ends the match as disconnected (kInputs) instead of waiting forever.
@@ -219,6 +223,11 @@ using DiscReader = bool (*)(uint32_t offset, void* dst, uint32_t size);
 inline void start_song(uint32_t, uint32_t) {}
 inline void stop() {}
 inline void set_disc_reader(DiscReader) {}
+inline void set_music_pack_reader(bool (*)(uint32_t, std::filesystem::path*)) {}
+inline bool resolve_music_pack_path(const std::string&, std::filesystem::path*) { return false; }
+inline void open_music_packs_folder() {}
+inline void set_music_packs_enabled(bool) {}
+inline bool music_packs_enabled() { return false; }
 inline void set_melee_volume(uint8_t) {}
 inline void set_next_song_gain(float) {}
 inline void set_paused(bool) {}
