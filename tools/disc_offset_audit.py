@@ -17,8 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DECOMP = ROOT / 'sourceport/extern/melee'
 BUILD = ROOT / 'build-sourceport-gcc'
 NINJA = os.environ.get('MELEE_NINJA', 'ninja')   # set MELEE_NINJA to a full path when ninja is not on PATH
-TEMPLATE_OBJ = ('CMakeFiles/melee_game.dir/C_/Users/Chandler/NEW_project/melee-sourceport/'
-                'sourceport/extern/melee/src/melee/ft/kinds/ftLink/ftlinkattackair.c.obj')
+
 
 STRUCT = re.compile(r'\bstruct\s+(\w+)\s*\{', re.S)
 FIELD = re.compile(r'/\*\s*(?:\w+)?\s*\+\s*([0-9A-Fa-f]+)\s*\*/\s*([^;{}]*?)\b(\w+)\s*(\[[^\]]*\])*\s*(?::\s*\d+)?\s*;')
@@ -55,8 +54,9 @@ def disc_structs(text):
 
 
 def compile_command():
-    cmd = subprocess.run([NINJA, '-C', str(BUILD), '-t', 'commands', TEMPLATE_OBJ],
-                         capture_output=True, text=True).stdout.strip().splitlines()[-1]
+    commands = subprocess.run([NINJA, '-C', str(BUILD), '-t', 'commands', 'melee_game'],
+                              capture_output=True, text=True, check=True).stdout.splitlines()
+    cmd = next(line for line in commands if 'ftlinkattackair.c' in line and ' -c ' in line)
     cmd = cmd.replace('\\', '/')
     cmd = re.sub(r' -MD -MT \S+ -MF \S+', '', cmd)
     cmd = re.sub(r' -o \S+', ' -o NUL', cmd)
@@ -65,9 +65,12 @@ def compile_command():
 
 
 def main():
+    global BUILD
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--json', type=Path)
+    ap.add_argument('--build-dir', type=Path, default=BUILD)
     a = ap.parse_args()
+    BUILD = a.build_dir.resolve()
     cmd, src_token = compile_command()
     headers = sorted(p for p in (DECOMP / 'src').rglob('*.h') if 'DISC_STRUCT' in p.read_text(errors='replace'))
     report, probe_dir = [], Path(tempfile.mkdtemp(prefix='disc_probe_'))

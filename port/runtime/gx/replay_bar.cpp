@@ -3,10 +3,13 @@
 #include "replay_control.h"
 #include "host.h"
 #include <imgui.h>
+#include <windows.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
+#include <string>
 
 namespace replay_bar {
 namespace {
@@ -42,6 +45,39 @@ void draw(float width, float height, bool menu_open) {
     last_mouse = io.MousePos;
   }
   const bool mouse_recent = mouse_time > 0.0 && now - mouse_time < kShowSeconds;
+
+  // H hides the bar for good (for recording): it stays away while paused, seeking or when the
+  // mouse moves, and every control keeps working. H again brings it back. Read here, on the thread
+  // that draws it, only while the game window has the focus and no menu has the keys.
+  static bool hidden = false, h_was_down = true;   // UI thread only; "true" so a held H at start is no press
+  static double hidden_note = 0.0;
+  bool h_down = false;
+  if (!menu_open) {
+    const HWND front = GetForegroundWindow();
+    DWORD pid = 0;
+    if (front && GetWindowThreadProcessId(front, &pid) && pid == GetCurrentProcessId())
+      h_down = (GetAsyncKeyState('H') & 0x8000) != 0;
+  }
+  if (h_down && !h_was_down) {
+    hidden = !hidden;
+    hidden_note = hidden ? now : 0.0;
+    if (!hidden) mouse_time = now;   // show it at once
+  }
+  h_was_down = h_down || menu_open;
+  if (hidden) {
+    g_cursor.store(false, std::memory_order_relaxed);
+    if (hidden_note > 0.0 && now - hidden_note < 2.0) {
+      // Said once, briefly, so the key that brings it back is not a secret.
+      const char* note = "Replay bar hidden. H: show it again";
+      const ImVec2 size = ImGui::CalcTextSize(note);
+      const ImVec2 at(16.0f, height - size.y - 20.0f);
+      ImDrawList* nl = ImGui::GetForegroundDrawList();
+      nl->AddRectFilled(ImVec2(at.x - 8.0f, at.y - 5.0f), ImVec2(at.x + size.x + 8.0f, at.y + size.y + 5.0f),
+                        IM_COL32(10, 12, 18, 190), 5.0f);
+      nl->AddText(at, IM_COL32(236, 240, 246, 255), note);
+    }
+    return;
+  }
   const bool visible = !menu_open && (st.paused || st.seeking || mouse_recent ||
                                       (st.last_input > 0.0 && now - st.last_input < kShowSeconds));
   g_cursor.store(visible && mouse_recent, std::memory_order_relaxed);
@@ -99,7 +135,7 @@ void draw(float width, float height, bool menu_open) {
   }
   dl->AddText(ImVec2(line_x0, line_y + 10.0f), dim,
               "Space: pause     Left, Right: 5 seconds (Shift: 30)     Right or . while paused: one frame     "
-              "[ ] or Down, Up: speed     Tab or R: fast forward     Home: restart");
+              "[ ] or Down, Up: speed     Tab or R: fast forward     Home: restart     H: hide this bar");
   dl->PopClipRect();
 
   if (over) {
@@ -117,3 +153,32 @@ void draw(float width, float height, bool menu_open) {
 }
 
 }  // namespace replay_bar
+
+namespace screen_label {
+namespace {
+std::mutex g_lock;
+std::string g_text;
+double g_until = 0.0;
+}  // namespace
+
+void show(const char* text, double seconds) {
+  std::lock_guard<std::mutex> lock(g_lock);
+  g_text = text ? text : "";
+  g_until = host::now_seconds() + seconds;
+}
+
+void draw(float width, float height) {
+  std::string text;
+  {
+    std::lock_guard<std::mutex> lock(g_lock);
+    if (g_text.empty() || host::now_seconds() >= g_until) return;
+    text = g_text;
+  }
+  const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+  const ImVec2 at((width - size.x) * 0.5f, height - size.y - 28.0f);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(at.x - 10.0f, at.y - 6.0f), ImVec2(at.x + size.x + 10.0f, at.y + size.y + 6.0f),
+                    IM_COL32(10, 12, 18, 200), 6.0f);
+  dl->AddText(at, IM_COL32(236, 240, 246, 255), text.c_str());
+}
+}  // namespace screen_label

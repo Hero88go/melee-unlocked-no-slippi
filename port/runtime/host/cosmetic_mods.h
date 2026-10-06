@@ -100,6 +100,10 @@ void configure(const std::string& settings_path);
 // character variants commit as one transaction; supported project stages/effects remain subject to
 // their fail-closed runtime validation policies.
 ImportResult import_file(const std::string& path);
+struct StageSlot { std::string target_path, name; };
+std::vector<StageSlot> stage_slots();
+// A raw stage DAT with a custom filename: the user chooses which stage it replaces.
+ImportResult import_stage_dat(const std::string& path, const std::string& target_path);
 
 // A portrait (the character select picture) or a stock icon for one costume slot, imported on its
 // own with no costume file. It is a catalog entry of its own (kind character_portrait, target
@@ -249,6 +253,21 @@ struct RepublishResult {
   std::vector<RepublishedFile> files;
 };
 RepublishResult republish_slot(uint8_t* fst, uint32_t fst_size, const std::string& slot);
+// ---- stage select skin cycling (both engines) ----
+// The same two steps for a stage file ("GrSt.dat", with or without a leading slash): one step
+// through the standard stage and the stage skins installed for that file, saved like a Mods tab
+// choice, then the file published again. Offline only: refused while an online session is up.
+LiveCycle cycle_stage_live(const std::string& stage_file, int direction);
+RepublishResult republish_stage(uint8_t* fst, uint32_t fst_size, const std::string& stage_file);
+// Default off. Takes effect at the next match; saved fixed choices are preserved.
+bool random_stage_skins();
+bool set_random_stage_skins(bool enabled, std::string* error = nullptr);
+// Called once before match DVD preload, with a host-owned monotonically increasing token.
+// Repeated calls with that token retain the same choice, including during rollback.
+RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::string& stage_file,
+                               uint64_t match_token);
+bool stage_gameplay_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
+                            std::string* detail);
 // The skin serving this disc file now, or empty for the disc's own file.
 std::string applied_asset(uint32_t vanilla_file_start);
 
@@ -275,6 +294,9 @@ bool online_allowed(uint32_t vanilla_file_start);
 // How many applied costumes show the standard costume online (each costume counts once, also when
 // two disc files serve it). *stages gets the same count for stage choices.
 uint32_t swapped_online_count(uint32_t* stages = nullptr);
+// For the title demo's memory check (host.cpp): the sum of the four largest growths, in bytes, among
+// the active overrides that are not stage files (0 when none is larger than its original).
+uint32_t largest_fighter_growth();
 
 // Online rule for costumes: the _Share_joint skeleton equals the standard costume's (same joints,
 // same hierarchy, same rest pose; see the .cpp). On success *detail says how many joints matched;

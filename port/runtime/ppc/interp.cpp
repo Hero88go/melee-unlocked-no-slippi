@@ -5,6 +5,7 @@
 // same whether translated or interpreted.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ppc.h"
+#include "ram_translator.h"
 #include "host.h"
 #include <algorithm>
 #include <cstdio>
@@ -14,22 +15,42 @@
 #include <vector>
 
 namespace ppc {
+// Observe auxiliary handlers' interpreted stores. Translated stores and
+// runtime stencils keep their original behavior and cost in normal gameplay.
+static void observed_st8(Context& c, uint8_t* m, uint32_t ea, uint32_t v) {
+  if (store_observer()) store_observer()(c, ea, 1, uint8_t(v));
+  st8(c, m, ea, v);
+}
+static void observed_st16(Context& c, uint8_t* m, uint32_t ea, uint32_t v) {
+  if (store_observer()) store_observer()(c, ea, 2, uint16_t(v));
+  st16(c, m, ea, v);
+}
+static void observed_st32(Context& c, uint8_t* m, uint32_t ea, uint32_t v) {
+  if (store_observer()) store_observer()(c, ea, 4, v);
+  st32(c, m, ea, v);
+}
+static void observed_st64(Context& c, uint8_t* m, uint32_t ea, uint64_t v) {
+  if (store_observer()) store_observer()(c, ea, 8, v);
+  st64(c, m, ea, v);
+}
 Fn lookup(uint32_t addr);
 bool function_bounds(uint32_t addr, uint32_t* lo, uint32_t* hi);
-
-namespace {
 
 // Test runs (MELEE_INTERP_POLL=compiled): poll for host events only where translated code does, on a
 // backward branch without link that stays inside its function. The default also counts calls to lower
 // addresses and branches out of a function, so the same function run here or compiled takes events at
 // other instructions: harmless timing, but it hides everything else in a whole-RAM comparison of the two.
-inline void branch_poll(Context& c, uint32_t pc, uint32_t t, bool link) {
+void ram_branch_poll(Context& c, uint32_t pc, uint32_t t, bool link) {
+  // A bounded auxiliary code handler runs inside one pad-read, outside guest time.
+  if (execution_budget.active) return;
   if (t > pc) return;
   static const bool like_compiled = [] { const char* v = std::getenv("MELEE_INTERP_POLL"); return v && std::string(v) == "compiled"; }();
   if (!like_compiled) { backedge(c); return; }
   uint32_t lo = 0, hi = 0;
   if (!link && function_bounds(pc, &lo, &hi) && t >= lo && pc < hi) backedge(c);
 }
+
+namespace {
 
 inline uint32_t bits(uint32_t w, int start, int count) { return (w >> (32 - start - count)) & ((1u << count) - 1); }
 inline uint32_t sext16(uint32_t v) { return (uint32_t)(int32_t)(int16_t)v; }
@@ -150,6 +171,10 @@ struct Interp {
   }
 
   void step() {
+    if (execution_budget.active) {
+      if (!execution_budget.remaining) throw ExecutionBudgetExceeded{};
+      --execution_budget.remaining;
+    }
     uint32_t w = ld32(c, m, pc);
     if (ring_on()) { ring[ring_at] = {pc, w, c.r[0], c.r[1], c.r[3], c.r[4], c.r[5], c.r[31], c.lr, c.ctr}; ring_at = (ring_at + 1) % kRing; }
     uint32_t op = w >> 26;
@@ -180,26 +205,26 @@ struct Interp {
       case 33: { uint32_t ea = R[ra] + simm; R[rd] = ld32(c, m, ea); R[ra] = ea; break; }
       case 34: R[rd] = ld8(c, m, A + simm); break;
       case 35: { uint32_t ea = R[ra] + simm; R[rd] = ld8(c, m, ea); R[ra] = ea; break; }
-      case 36: st32(c, m, A + simm, R[rs]); break;
-      case 37: { uint32_t ea = R[ra] + simm; st32(c, m, ea, R[rs]); R[ra] = ea; break; }
-      case 38: st8(c, m, A + simm, R[rs]); break;
-      case 39: { uint32_t ea = R[ra] + simm; st8(c, m, ea, R[rs]); R[ra] = ea; break; }
+      case 36: observed_st32(c, m, A + simm, R[rs]); break;
+      case 37: { uint32_t ea = R[ra] + simm; observed_st32(c, m, ea, R[rs]); R[ra] = ea; break; }
+      case 38: observed_st8(c, m, A + simm, R[rs]); break;
+      case 39: { uint32_t ea = R[ra] + simm; observed_st8(c, m, ea, R[rs]); R[ra] = ea; break; }
       case 40: R[rd] = ld16(c, m, A + simm); break;
       case 41: { uint32_t ea = R[ra] + simm; R[rd] = ld16(c, m, ea); R[ra] = ea; break; }
       case 42: R[rd] = (uint32_t)(int32_t)(int16_t)ld16(c, m, A + simm); break;
       case 43: { uint32_t ea = R[ra] + simm; R[rd] = (uint32_t)(int32_t)(int16_t)ld16(c, m, ea); R[ra] = ea; break; }
-      case 44: st16(c, m, A + simm, R[rs]); break;
-      case 45: { uint32_t ea = R[ra] + simm; st16(c, m, ea, R[rs]); R[ra] = ea; break; }
+      case 44: observed_st16(c, m, A + simm, R[rs]); break;
+      case 45: { uint32_t ea = R[ra] + simm; observed_st16(c, m, ea, R[rs]); R[ra] = ea; break; }
       case 46: { uint32_t ea = A + simm; for (uint32_t i = rd; i < 32; ++i, ea += 4) R[i] = ld32(c, m, ea); break; }
-      case 47: { uint32_t ea = A + simm; for (uint32_t i = rs; i < 32; ++i, ea += 4) st32(c, m, ea, R[i]); break; }
+      case 47: { uint32_t ea = A + simm; for (uint32_t i = rs; i < 32; ++i, ea += 4) observed_st32(c, m, ea, R[i]); break; }
       case 48: F0(rd) = F1(rd) = float_bits_to_double(ld32(c, m, A + simm)); break;
       case 49: { uint32_t ea = R[ra] + simm; F0(rd) = F1(rd) = float_bits_to_double(ld32(c, m, ea)); R[ra] = ea; break; }
       case 50: U0(rd) = ld64(c, m, A + simm); break;
       case 51: { uint32_t ea = R[ra] + simm; U0(rd) = ld64(c, m, ea); R[ra] = ea; break; }
-      case 52: st32(c, m, A + simm, double_to_float_bits(F0(rs))); break;
-      case 53: { uint32_t ea = R[ra] + simm; st32(c, m, ea, double_to_float_bits(F0(rs))); R[ra] = ea; break; }
-      case 54: st64(c, m, A + simm, U0(rs)); break;
-      case 55: { uint32_t ea = R[ra] + simm; st64(c, m, ea, U0(rs)); R[ra] = ea; break; }
+      case 52: observed_st32(c, m, A + simm, double_to_float_bits(F0(rs))); break;
+      case 53: { uint32_t ea = R[ra] + simm; observed_st32(c, m, ea, double_to_float_bits(F0(rs))); R[ra] = ea; break; }
+      case 54: observed_st64(c, m, A + simm, U0(rs)); break;
+      case 55: { uint32_t ea = R[ra] + simm; observed_st64(c, m, ea, U0(rs)); R[ra] = ea; break; }
       // ---------------- paired-single quantized (D-form) ----------------
       case 56: psq_load(c, m, A + sext12(w & 0xFFF), rd, bits(w, 16, 1), bits(w, 17, 3)); break;
       case 57: { uint32_t ea = R[ra] + sext12(w & 0xFFF); psq_load(c, m, ea, rd, bits(w, 16, 1), bits(w, 17, 3)); R[ra] = ea; break; }
@@ -217,7 +242,7 @@ struct Interp {
         bool take = cond(bo, bi);
         if (!take) break;
         if (w & 1) c.lr = pc + 4;
-        branch_poll(c, pc, t, (w & 1) != 0);
+        ram_branch_poll(c, pc, t, (w & 1) != 0);
         transfer(t, (w & 1) != 0);
         return;
       }
@@ -225,7 +250,7 @@ struct Interp {
         uint32_t li = w & 0x03FFFFFC; if (li & 0x02000000) li |= 0xFC000000u;
         uint32_t t = (w & 2) ? li : pc + li;
         if (w & 1) c.lr = pc + 4;
-        branch_poll(c, pc, t, (w & 1) != 0);
+        ram_branch_poll(c, pc, t, (w & 1) != 0);
         transfer(t, (w & 1) != 0);
         return;
       }
@@ -238,11 +263,9 @@ struct Interp {
           uint32_t t = c.lr;
           if (w & 1) c.lr = pc + 4;
           if (t == entry_lr) { done = true; return; }       // return to the host caller (blrl: with the new LR)
-          if (!(w & 1) && lookup(t) && !runs_from_ram(t)) {
-            host::log("interpreter: blr at %08X to %08X, entered with LR %08X", pc, t, entry_lr);
-            dump_history();
-            fatal(c, "interpreter: blr into a function entry", t);
-          }
+          // A RAM hook can return into a generated continuation as well as RAM.
+          // bclr is an indirect branch: dispatch that continuation, just like a
+          // tail branch, and let its restored LR unwind to the original caller.
           transfer(t, (w & 1) != 0);
           return;
         }
@@ -316,12 +339,12 @@ struct Interp {
           case 124: R[ra] = ~(R[rs] | B); if (rc) cr0(c, R[ra]); break;
           case 144: mtcrf(c, bits(w, 12, 8), R[rs]); break;
           case 146: mtmsr(c, R[rs]); break;
-          case 150: st32(c, m, ea, R[rs]); c.cr[0] = (uint8_t)(2 | c.so); break;   // stwcx
-          case 151: st32(c, m, ea, R[rs]); break;
-          case 183: { uint32_t e = R[ra] + B; st32(c, m, e, R[rs]); R[ra] = e; break; }
+          case 150: observed_st32(c, m, ea, R[rs]); c.cr[0] = (uint8_t)(2 | c.so); break;   // stwcx
+          case 151: observed_st32(c, m, ea, R[rs]); break;
+          case 183: { uint32_t e = R[ra] + B; observed_st32(c, m, e, R[rs]); R[ra] = e; break; }
           case 210: case 242: break;                                         // mtsr, mtsrin
-          case 215: st8(c, m, ea, R[rs]); break;
-          case 247: { uint32_t e = R[ra] + B; st8(c, m, e, R[rs]); R[ra] = e; break; }
+          case 215: observed_st8(c, m, ea, R[rs]); break;
+          case 247: { uint32_t e = R[ra] + B; observed_st8(c, m, e, R[rs]); R[ra] = e; break; }
           case 279: R[rd] = ld16(c, m, ea); break;
           case 284: R[ra] = ~(R[rs] ^ B); if (rc) cr0(c, R[ra]); break;
           case 311: { uint32_t e = R[ra] + B; R[rd] = ld16(c, m, e); R[ra] = e; break; }
@@ -330,9 +353,9 @@ struct Interp {
           case 343: R[rd] = (uint32_t)(int32_t)(int16_t)ld16(c, m, ea); break;
           case 371: R[rd] = ((bits(w, 16, 5) << 5 | bits(w, 11, 5)) == 268) ? (uint32_t)read_tb(c) : (uint32_t)(read_tb(c) >> 32); break;
           case 375: { uint32_t e = R[ra] + B; R[rd] = (uint32_t)(int32_t)(int16_t)ld16(c, m, e); R[ra] = e; break; }
-          case 407: st16(c, m, ea, R[rs]); break;
+          case 407: observed_st16(c, m, ea, R[rs]); break;
           case 412: R[ra] = R[rs] | ~B; if (rc) cr0(c, R[ra]); break;
-          case 439: { uint32_t e = R[ra] + B; st16(c, m, e, R[rs]); R[ra] = e; break; }
+          case 439: { uint32_t e = R[ra] + B; observed_st16(c, m, e, R[rs]); R[ra] = e; break; }
           case 444: R[ra] = R[rs] | B; if (rc) cr0(c, R[ra]); break;
           case 467: spr_put(bits(w, 16, 5) << 5 | bits(w, 11, 5), R[rs]); break;
           case 476: R[ra] = ~(R[rs] & B); if (rc) cr0(c, R[ra]); break;
@@ -346,18 +369,18 @@ struct Interp {
           case 599: U0(rd) = ld64(c, m, ea); break;
           case 631: { uint32_t e = R[ra] + B; U0(rd) = ld64(c, m, e); R[ra] = e; break; }
           case 662: st32r(c, m, ea, R[rs]); break;
-          case 663: st32(c, m, ea, double_to_float_bits(F0(rs))); break;
-          case 695: { uint32_t e = R[ra] + B; st32(c, m, e, double_to_float_bits(F0(rs))); R[ra] = e; break; }
+          case 663: observed_st32(c, m, ea, double_to_float_bits(F0(rs))); break;
+          case 695: { uint32_t e = R[ra] + B; observed_st32(c, m, e, double_to_float_bits(F0(rs))); R[ra] = e; break; }
           case 725: stswi(c, m, A, rs, rb ? rb : 32); break;
-          case 727: st64(c, m, ea, U0(rs)); break;
-          case 759: { uint32_t e = R[ra] + B; st64(c, m, e, U0(rs)); R[ra] = e; break; }
+          case 727: observed_st64(c, m, ea, U0(rs)); break;
+          case 759: { uint32_t e = R[ra] + B; observed_st64(c, m, e, U0(rs)); R[ra] = e; break; }
           case 790: R[rd] = ld16r(c, m, ea); break;
           case 792: R[ra] = sraw(c, R[rs], B); if (rc) cr0(c, R[ra]); break;
           case 824: R[ra] = srawi(c, R[rs], rb); if (rc) cr0(c, R[ra]); break;
           case 918: st16r(c, m, ea, R[rs]); break;
           case 922: R[ra] = (uint32_t)(int32_t)(int16_t)R[rs]; if (rc) cr0(c, R[ra]); break;
           case 954: R[ra] = (uint32_t)(int32_t)(int8_t)R[rs]; if (rc) cr0(c, R[ra]); break;
-          case 983: st32(c, m, ea, (uint32_t)U0(rs)); break;
+          case 983: observed_st32(c, m, ea, (uint32_t)U0(rs)); break;
           case 1014: dcbz(c, m, ea); break;
           default: unsupported(w); return;
         }
@@ -483,12 +506,12 @@ std::unordered_map<uint32_t, uint64_t>* g_profile = nullptr;
 
 }  // namespace
 
-void interpret(Context& c, uint8_t* m, uint32_t addr) {
+void resume_interpret(Context& c, uint8_t* m, uint32_t addr, uint32_t entry_lr) {
   if (!fast(m, addr) || (addr & 3)) fatal(c, "call to unmapped guest address", addr);
   ++g_interpreted_calls;
-  enter(c, addr);
   Interp::note_start(addr, c.lr);
   Interp in(c, m, addr);
+  in.entry_lr = entry_lr;
   static const bool profile = [] { const char* v = std::getenv("MELEE_INTERP_PROFILE"); return v && (*v == '1' || *v == '2'); }();
   if (profile) {
     if (!g_profile) g_profile = new std::unordered_map<uint32_t, uint64_t>();
@@ -519,8 +542,8 @@ void interpret(Context& c, uint8_t* m, uint32_t addr) {
         for (const auto& r : ranges)
           if (in.pc >= r.lo && in.pc < r.hi && host::retrace_count() >= r.from) {
             ++lines;
-            host::log("[interp] %08X r0=%08X r3=%08X r4=%08X r5=%08X r6=%08X r12=%08X r29=%08X r30=%08X r31=%08X cr=%08X ctr=%08X",
-                      in.pc, c.r[0], c.r[3], c.r[4], c.r[5], c.r[6], c.r[12], c.r[29], c.r[30], c.r[31], ppc::mfcr(c), c.ctr);
+            host::log("[interp] %08X insn=%08X r0=%08X r1=%08X r3=%08X r4=%08X r5=%08X r6=%08X r12=%08X r27=%08X r28=%08X r29=%08X r30=%08X r31=%08X cr=%08X ctr=%08X",
+                      in.pc, ppc::ld32(c, m, in.pc), c.r[0], c.r[1], c.r[3], c.r[4], c.r[5], c.r[6], c.r[12], c.r[27], c.r[28], c.r[29], c.r[30], c.r[31], ppc::mfcr(c), c.ctr);
             break;
           }
       in.step(); ++g_interpreted_insns;
@@ -528,6 +551,11 @@ void interpret(Context& c, uint8_t* m, uint32_t addr) {
     return;
   }
   while (!in.done) { in.step(); ++g_interpreted_insns; }
+}
+
+void interpret(Context& c, uint8_t* m, uint32_t addr) {
+  enter(c, addr);
+  resume_interpret(c, m, addr, c.lr);
 }
 
 void interpreter_dump_recent(Context& c) {   // the ring and the jump history, for host-side checks

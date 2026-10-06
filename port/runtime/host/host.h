@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <filesystem>
 #include "ppc.h"
 #include "../abi/mu_host.h"
 #include "tick_timing.h"
@@ -103,8 +104,13 @@ bool disc_read(uint32_t offset, void* dst, uint32_t size);
 bool disc_read_file(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, uint32_t size);
 uint32_t disc_fst_offset();
 uint32_t disc_fst_size();
+uint32_t disc_fst_addr();   // the file table as boot placed it (repairs the low-memory pointer when it was overwritten)
 uint32_t disc_fst_max_size();
 bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
+// Resolves an absolute disc file offset (as sent to the jukebox) to its case-normalized FST path.
+bool disc_find_path_by_offset(uint32_t offset, std::string* path);
+// Lists menu and stage HPS paths from the loaded disc's FST.
+bool disc_music_paths(std::vector<std::string>* paths);
 
 // ---- boot ----
 void boot_setup();               // low memory, FST placement, DOL load, registers
@@ -173,6 +179,7 @@ bool wait_until_console_time(uint64_t tb);
 void install_audio_pacing();
 void install_clean_mode_music();   // Static Recomp, clean mode: music through the host's player
 void install_mod_disc_guards();   // Static Recomp, mod disc: a file the disc lacks opens as an empty file   // Static Recomp: audio blocks at their 5 ms times during the frame wait
+void report_heap_panic(ppc::Context& c);   // OSPanic at lbmemory.c:233: logs the heap that had no room and the title demo's draw
 void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
 void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language

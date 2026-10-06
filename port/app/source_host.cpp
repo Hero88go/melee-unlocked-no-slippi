@@ -27,6 +27,10 @@
 #include <unordered_set>
 #include <vector>
 #include "host.h"
+#include "offline_input_delay.h"
+#include "disc_archive.h"
+#include "card_backup.h"
+#include "replay_bar.h"
 #include "audio.h"
 #include "audio_core.h"
 #include "ax_ucode.h"
@@ -41,9 +45,10 @@
 #include "render_observer.h"
 #include "native_state_layout.h"
 #include "native_savestate.h"
-#ifdef MELEE_NO_SLIPPI
-#include "netplay_state.h"   // the same names, answered from the neutral netplay state
-#else
+// Both builds: the neutral netplay state. In the build without the Slippi layer it also answers the
+// Slippi names; in the normal build a peer-to-peer session (--p2p-*) is found through it.
+#include "netplay_state.h"
+#ifndef MELEE_NO_SLIPPI
 #include "native_practice.h"
 #include "jukebox.h"
 #include "slippi_playback.h"
@@ -144,6 +149,7 @@ void ax_native_wr32(uint32_t addr, uint32_t value) {
 struct FstFile { uint32_t offset, length; bool dir; };
 std::vector<FstFile> g_fst;
 std::unordered_map<std::string, int32_t> g_paths;   // lower-case "/dir/name" -> entry number
+std::unordered_map<uint32_t, std::string> g_music_paths;  // immutable HPS offset -> disc path
 std::vector<uint8_t> g_fst_raw;                      // the disc's table as read, for the cosmetic layer
 
 // ---- content views ----
@@ -935,7 +941,8 @@ uint32_t h_game_options2() {
 // them when a match is picked and they ride in the same word, so a replay records and replays them.
 uint32_t h_game_options3() {
   if (g_replaying) return g_replay_feature_options3;
-  return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits();
+  return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits() |
+         (gx::RenderOptions::live_unlock_all() ? 0u : MU_GAME_OPTION3_LOCKED_CONTENT);
 }
 uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |
@@ -1267,8 +1274,7 @@ constexpr uint8_t CMD_SKIN_CYCLE = 0xF9;
 // kCosmeticBase, so nothing the game preloaded under the old number is reused; a skin not proven to
 // change looks alone also gets the alias entry that names the disc's copy for online play, as at
 // startup. False when a file could not be given an entry (the caller puts the old pick back).
-bool republish_cosmetic_slot(const std::string& slot) {
-  const auto result = host::cosmetics::republish_slot(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot);
+bool publish_cosmetic_files(const std::string& slot, const host::cosmetics::RepublishResult& result) {
   if (!result.ok) return false;
   bool ok = true;
   for (const auto& file : result.files) {
@@ -1303,6 +1309,48 @@ bool republish_cosmetic_slot(const std::string& slot) {
     g_paths[g_raw_paths[i]] = entry;
   }
   return ok;
+}
+
+bool republish_cosmetic_slot(const std::string& slot, bool stage = false) {
+  return publish_cosmetic_files(slot, stage
+      ? host::cosmetics::republish_stage(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot)
+      : host::cosmetics::republish_slot(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot));
+}
+
+// One command at the new match scene boundary, before any stage DVD preload.
+constexpr uint8_t CMD_STAGE_SKIN_MATCH = 0xFD;
+void plan_random_stage_skin(const std::string& file, std::vector<uint8_t>& reply) {
+  reply.assign(1, 0);
+  if (g_replaying || g_cosmetic_fst.empty()) return;
+  static uint64_t match_token = 0;
+  const auto result = host::cosmetics::plan_stage_skin(g_cosmetic_fst.data(),
+      (uint32_t)g_cosmetic_fst.size(), file, ++match_token);
+  if (result.ok && publish_cosmetic_files(file, result)) reply[0] = 1;
+}
+
+// ---- stage select skin cycling (mn/mnstagesel.c, shim/mu_content.c) ----
+// payload: direction (1 next, 0 previous), then the stage's file name. reply: 1 when it changed.
+constexpr uint8_t CMD_STAGE_SKIN_CYCLE = 0xFB;
+// Title demo memory check (shim/mu_content.c mu_title_demo_stage): reply is four bytes, big endian,
+// the sum of the four largest growths among the installed skins that are not stage files.
+constexpr uint8_t CMD_SKIN_GROWTH = 0xFC;
+void cycle_stage_skin(const std::string& file, int direction, std::vector<uint8_t>& reply) {
+  reply.assign(1, 0);
+  if (g_replaying || g_cosmetic_fst.empty() || slippi::online::session_mode() >= 0) return;
+  const auto pick = host::cosmetics::cycle_stage_live(file, direction);
+  if (!pick.ok || !pick.changed) {
+    if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", file.c_str(), pick.message.c_str());
+    return;
+  }
+  if (!republish_cosmetic_slot(file, true)) {
+    // No entry for it: the previous pick goes back, saved and published.
+    host::cosmetics::cycle_stage_live(file, -direction);
+    republish_cosmetic_slot(file, true);
+    return;
+  }
+  screen_label::show(("Stage skin: " + pick.name).c_str(), 2.5);
+  host::log("cosmetics: stage select picked %s for %s", pick.name.c_str(), file.c_str());
+  reply[0] = 1;
 }
 
 void cycle_costume_skin(int character, int costume, int direction, std::vector<uint8_t>& reply) {
@@ -1393,6 +1441,25 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
         if (c == CMD_SKIN_CYCLE && n == 4) { cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply); return true; }
+        if (c == CMD_STAGE_SKIN_MATCH && n >= 2 && n <= 64 && p[n - 1] == 0) {
+          plan_random_stage_skin(std::string((const char*)p, strnlen((const char*)p, n)), reply);
+          return true;
+        }
+        if (c == CMD_SKIN_GROWTH && n == 0) {
+          uint32_t growth = host::cosmetics::largest_fighter_growth();
+          // MELEE_TEST_DEMO_GROWTH=<bytes>: test runs only, stands in for installed skins that much larger.
+          static const uint32_t test_growth = [] {
+            const char* v = std::getenv("MELEE_TEST_DEMO_GROWTH");
+            return v && host::options.no_gc_adapter ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u;
+          }();
+          growth += test_growth;
+          reply = {(uint8_t)(growth >> 24), (uint8_t)(growth >> 16), (uint8_t)(growth >> 8), (uint8_t)growth};
+          return true;
+        }
+        if (c == CMD_STAGE_SKIN_CYCLE && n >= 2 && n <= 65) {
+          cycle_stage_skin(std::string((const char*)p + 1, strnlen((const char*)p + 1, n - 1)), p[0] ? 1 : -1, reply);
+          return true;
+        }
         if (c == CMD_VOICE_MATCH && n == 8) { plan_voice_banks(p, reply); return true; }
         if (c == 0xF6 && n == 1) {
           // 20XX TE switches from inside the game (stage select Y: Frozen Mode), for this session.
@@ -1482,6 +1549,12 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           }
           last_pad_frame = pad_frame;
         }
+#ifndef MELEE_NO_SLIPPI
+        // A peer-to-peer session (--p2p-*, source_p2p.cpp) installed its handler: it owns the
+        // session commands for this run, and Slippi's session code is never entered. The handler is
+        // only ever installed after such a session started, so every other run takes the line below.
+        if (host::netplay::has_command_handler()) return host::netplay::handle(c, p, n, reply);
+#endif
         return slippi::online::handle(c, p, n, reply);
       });
 }
@@ -1546,6 +1619,23 @@ int32_t h_online_test_match(MuOnlineMatch* out) {
   }
   return request.harness ? 1 : 2;
 #else
+  // A peer-to-peer session asked for the match (--p2p-*, source_p2p.cpp): the same answer as the
+  // build without the Slippi layer gives, and Slippi's matchmaking is never started. No such
+  // request (every run without --p2p-*): the Slippi path below, unchanged.
+  const host::netplay::MatchRequest request = host::netplay::match_request();
+  if (request.requested) {
+    if (!g_online_test_started) {
+      g_online_test_started = true;
+      apply_content_mode(request.mode);
+      host::log("netplay: the game enters a requested match (mode %d, pad port %d)", request.mode, request.local_port);
+    }
+    if (out) {
+      std::memset(out, 0, sizeof *out);
+      out->mode = (uint8_t)request.mode;
+      out->local_port = (uint8_t)(request.local_port & 3);
+    }
+    return request.harness ? 1 : 2;
+  }
   const auto& lobby = slippi::online::config();
   const bool from_lobby = !lobby.lobby_code.empty();
   if (g_online_test_mode < 0 && !from_lobby) return 0;
@@ -1614,6 +1704,14 @@ void h_pad_read(MuPadStatus out[4]) {
   host::PadState pads[4];
   host::input_poll(pads);
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
+  bool offline_gameplay = false;
+  if (gx::RenderOptions::live_offline_delay() && !g_replaying &&
+      host::netplay::session_mode() < 0 && g_game.lcancel_view) {
+    MuLcancelView view{};
+    g_game.lcancel_view(&view);
+    for (const auto& fighter : view.port) offline_gameplay |= fighter.present != 0;
+  }
+  host::offline_delay::apply(pads, offline_gameplay);
   // The player's data-only Gecko codes, once per frame. Offline only: the writer in the game
   // library also refuses during an online match, whichever kind.
   if (slippi::online::session_mode() < 0 && !g_replaying) user_gecko::apply();
@@ -1704,6 +1802,48 @@ int32_t h_disc_file(int32_t entrynum, uint32_t* start, uint32_t* length) {
   *length = g_fst[entrynum].length;
   return 1;
 }
+// Music packs mirror the disc's /audio tree. A file with the original name replaces that track;
+// a sibling folder with the original stem is a random HPS playlist for that track.
+void index_music_paths() {
+  g_music_paths.clear();
+  for (const auto& path : g_paths) {
+    const int32_t index = path.second;
+    if (index <= 0 || index >= (int32_t)g_fst.size()) continue;
+    const FstFile& file = g_fst[(size_t)index];
+    if (file.dir || path.first.rfind("/audio/", 0) != 0 ||
+        _stricmp(std::filesystem::u8path(path.first).extension().string().c_str(), ".hps") != 0)
+      continue;
+    const std::string relative = path.first.substr(1);
+    g_music_paths.try_emplace(file.offset, relative);
+    const auto alias = g_view_alias.find(index);
+    if (alias != g_view_alias.end() && alias->second > 0 && alias->second < (int32_t)g_fst.size())
+      g_music_paths.try_emplace(g_fst[(size_t)alias->second].offset, relative);
+  }
+  wchar_t module[32768];
+  const DWORD n = GetModuleFileNameW(nullptr, module, (DWORD)_countof(module));
+  if (!n || n >= _countof(module)) return;
+  const std::filesystem::path root = std::filesystem::path(std::wstring(module, n)).parent_path() / L"MusicPacks";
+  std::error_code ec;
+  std::filesystem::create_directories(root, ec);
+  if (ec) return;
+  std::vector<std::string> paths;
+  paths.reserve(g_music_paths.size());
+  for (const auto& item : g_music_paths) paths.push_back(item.second);
+  std::sort(paths.begin(), paths.end());
+  paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+  std::ofstream list(root / L"Tracks.txt", std::ios::trunc);
+  if (!list) return;
+  list << "Menu and stage music files on this game disc:\n";
+  for (const auto& path : paths) list << "/" << path << "\n";
+}
+
+bool jukebox_music_pack_read(uint32_t offset, std::filesystem::path* out) {
+  if (!out) return false;
+  const auto source = g_music_paths.find(offset);
+  if (source == g_music_paths.end()) return false;
+  return slippi::jukebox::resolve_music_pack_path(source->second, out);
+}
+
 // The jukebox reads songs from where the game would: Slippi system files, the mod overlay, the disc.
 bool jukebox_disc_read(uint32_t offset, void* dst, uint32_t size) {
   bool ok = false;
@@ -1853,6 +1993,7 @@ void card_mount_files() {
   g_card_dir = g_profile_card.empty() ? std::filesystem::u8path(host::options.card_dir) : g_profile_card;
   std::error_code ec;
   std::filesystem::create_directories(g_card_dir, ec);
+  host::backup_card_folder(g_card_dir);
   card_clear_files();
   g_card_files.assign(CARD_MAX_FILES, nullptr);
   size_t slot = 0;
@@ -2829,6 +2970,21 @@ int run(void (*shutdown)(int)) {
   // Tests only: 20XX TE's features without mounting its save (its menu memory changes scripted runs).
   if (std::getenv("MELEE_TEST_TE_OWNED")) mods::status().te_owned = true;
   if (!read_fst()) host::die("this disc image has no readable file table. Use a clean, uncompressed Melee NTSC 1.02 ISO (a trimmed or compressed image will not work)");
+  // A readable FST and retail DOL do not prove that the disc's assets exist. A damaged image can
+  // have zero-filled file extents, which otherwise reach lbArchive_InitializeDAT during boot.
+  // Check the first required archive on the disc before building menus or entering the game DLL.
+  {
+    const auto rumble = g_paths.find("/lbrb.dat");
+    if (rumble == g_paths.end() || g_fst[rumble->second].dir)
+      host::die("The game ISO is missing LbRb.dat. Select a fresh, uncompressed Melee NTSC 1.02 ISO.");
+    const auto& file = g_fst[rumble->second];
+    uint8_t header[0x20]{};
+    std::string error;
+    if (!host::disc_read(file.offset, header, sizeof header))
+      host::die("The game ISO cannot read LbRb.dat. Select a fresh, uncompressed Melee NTSC 1.02 ISO.");
+    if (!host::disc_archive_header(header, sizeof header, file.length, &error))
+      host::die("The game ISO contains damaged LbRb.dat: %s. Select a fresh, uncompressed Melee NTSC 1.02 ISO; rebuild a modified ISO from a working base image.", error.c_str());
+  }
   // A development game library built with the native Akaneia fighters exports this name; the shipped
   // one does not, and an Akaneia disc stays refused. Looked up without running any of its code.
   {
@@ -2843,6 +2999,8 @@ int run(void (*shutdown)(int)) {
     }
   }
   load_mod_overlay();
+  index_music_paths();
+  slippi::jukebox::set_music_pack_reader(jukebox_music_pack_read);
   check_replay_content();
   load_cosmetics(g_replay || g_online_test_mode >= 0);
   {
@@ -2868,6 +3026,7 @@ int run(void (*shutdown)(int)) {
   host::game_image = (uint8_t*)module;
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
+  user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
   user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();

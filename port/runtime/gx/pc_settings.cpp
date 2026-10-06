@@ -152,6 +152,46 @@ void draw_cosmetic_preview(const host::cosmetics::AssetInfo& asset) {
     ImGui::Image(preview->GetTexRef(), ImVec2(preview->Width * scale, preview->Height * scale));
   }
 }
+
+// The same picture for a list row. A list can ask for dozens at once, so this reads and decodes at
+// most one file in a frame: a row whose picture is not ready gets nullptr (the placeholder tile)
+// and asks again on the next frame. Decoded pictures stay in g_cosmetic_previews.
+ImTextureData* cosmetic_thumbnail(const std::string& path) {
+  if (path.empty()) return nullptr;
+  auto cached = g_cosmetic_previews.find(path);
+  if (cached != g_cosmetic_previews.end()) return cached->second.get();
+  static int decoded_frame = -1;
+  const int frame = ImGui::GetFrameCount();
+  if (decoded_frame == frame) return nullptr;
+  decoded_frame = frame;
+  return cosmetic_preview(path);
+}
+
+// One thumbnail tile at `a`: the picture fitted inside w by h, or a neutral figure when the skin
+// has no picture (or it is not decoded yet). Nothing is asked for while the tile is out of view.
+void draw_cosmetic_tile_at(ImDrawList* draw, ImVec2 a, float w, float h, const std::string& path) {
+  const ImVec2 b(a.x + w, a.y + h);
+  if (!ImGui::IsRectVisible(a, b)) return;
+  draw->AddRectFilled(a, b, IM_COL32(30, 36, 48, 255), 3.0f);
+  if (ImTextureData* picture = cosmetic_thumbnail(path)) {
+    const float scale = std::min(w / (float)picture->Width, h / (float)picture->Height);
+    const ImVec2 size(picture->Width * scale, picture->Height * scale);
+    const ImVec2 at(a.x + (w - size.x) * 0.5f, a.y + (h - size.y) * 0.5f);
+    draw->AddImage(picture->GetTexRef(), at, ImVec2(at.x + size.x, at.y + size.y));
+  } else {
+    const ImU32 figure = IM_COL32(74, 86, 106, 255);
+    draw->AddCircleFilled(ImVec2((a.x + b.x) * 0.5f, a.y + h * 0.34f), w * 0.17f, figure, 16);
+    draw->AddRectFilled(ImVec2(a.x + w * 0.24f, a.y + h * 0.54f), ImVec2(b.x - w * 0.24f, b.y - h * 0.12f), figure, 3.0f);
+  }
+  draw->AddRect(a, b, IM_COL32(96, 110, 134, 160), 3.0f);
+}
+
+// The tile as an item of the current line.
+void draw_cosmetic_tile(const std::string& path, float w, float h) {
+  const ImVec2 a = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(ImVec2(w, h));
+  draw_cosmetic_tile_at(ImGui::GetWindowDrawList(), a, w, h, path);
+}
 }
 
 void settings_guest_options_frame(uint8_t menu, uint16_t selection, uint32_t buttons) {
@@ -903,6 +943,37 @@ struct CustomPreset { bool set = false; int efb = 0, ssaa = 1, aniso = 16, dlss 
 static CustomPreset g_custom_preset;
 // The panel has saved which user Gecko codes are on (until then GeckoCodes.ini's own list is used).
 static bool g_gecko_chosen = false;
+
+// "+ Add Gecko code": paste in a code without finding and editing GeckoCodes.ini by hand. A pasted
+// block may carry its own "$Name" line (Dolphin's format, what most sites hand out); if it does, that
+// name is used and the typed one is just what is offered until then. On both engines' code pages.
+// True when a code was added (the settings are then saved).
+static bool gecko_add_code_button() {
+  bool changed = false;
+      static char add_name[64] = "";
+      static char add_body[32768] = "";   // room for the longest codes going around (a few hundred lines)
+      static std::string add_error;
+      if (ImGui::Button("+ Add Gecko code")) { add_name[0] = 0; add_body[0] = 0; add_error.clear(); ImGui::OpenPopup("add_gecko_code"); }
+      if (ImGui::BeginPopup("add_gecko_code")) {
+        ImGui::TextUnformatted("Name");
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::InputText("##gecko_name", add_name, sizeof add_name);
+        ImGui::TextUnformatted("Code lines: paste them here (XXXXXXXX YYYYYYYY, one pair per line).");
+        ImGui::TextUnformatted("If the paste starts with a $Name line, that name is used.");
+        ImGui::InputTextMultiline("##gecko_body", add_body, sizeof add_body, ImVec2(440.0f, 180.0f));
+        if (!add_error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", add_error.c_str());
+        if (ImGui::Button("Add")) {
+          add_error = user_gecko::add(add_name, add_body);
+          if (add_error.empty()) { user_gecko::save(); changed = true; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+      }
+  return changed;
+}
+
 
 // The controller last shown in the Controls tab (its device number), so the tab opens on it again
 // rather than on whatever plays as port 1. -1: nothing saved yet.
@@ -1803,6 +1874,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // Start in the game. F1 and the launcher Settings entry remain available at any time.
   options.settings_open = false;
   options.cpu_20xx = false;   // a file without the key: off
+  options.unlock_all = true;   // a file without the key: on
+  options.offline_delay = false;
   options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;   // files without the keys: off
   options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
   options.mod_choices.clear();
@@ -1862,6 +1935,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
+      else if (key == "musicpacks") slippi::jukebox::set_music_packs_enabled(value == "1");
       else if (key == "audio_mode") options.audio_mode = std::clamp(std::stoi(value), 0, 3);
       else if (key == "audio_asio_driver") options.audio_asio_driver = value;
       else if (key == "audio_asio_buffer") { const int b = std::stoi(value); options.audio_asio_buffer = b == 0 ? 0 : std::clamp(b, 32, 2048); }
@@ -1869,6 +1943,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "audio_buffer_ms") options.audio_buffer_ms = std::clamp(std::stoi(value), 5, 120);
       else if (key == "quickchat") slippi::online::config().chat = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
+      else if (key == "offline_delay") options.offline_delay = value == "1";
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "showfps") options.show_fps = value == "1";
       else if (key == "showvram") options.show_vram = value == "1";
@@ -1918,7 +1993,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       if (!matched) {
       if (key == "inputoverlaystick") options.input_overlay_stick = std::clamp(std::atoi(value.c_str()), 1, 10);
       else if (key == "lcancelindicator") lcancel::set_indicator(value == "1");
-      else if (key == "lcancel_flash_mode") saved_lcancel_flash = std::clamp(std::stoi(value), 0, 4);
+      else if (key == "lcancel_flash_mode") saved_lcancel_flash = std::clamp(std::stoi(value), 0, 6);
       else if (key == "lcancel_success_flash") saved_lcancel_success = std::clamp(std::stoi(value), 0, 2);
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
       else if (key == "palstockicons") gecko::option_pal_stock_icons = value == "1";
@@ -1930,6 +2005,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "backgroundinput") host::g_background_input = value != "0";
       else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
+      else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_getup") options.cpu_getup = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_di") options.cpu_di = std::clamp(std::atoi(value.c_str()), 0, 3);
@@ -2116,13 +2192,15 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // cleared here and never saved again, so the migration happens one time.
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
+  RenderOptions::live_unlock_all() = options.unlock_all;
+  RenderOptions::live_offline_delay() = options.offline_delay;
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
   // Explicit new choices win over legacy keys regardless of their order in the file. A legacy
   // TE_ENABLE alone remains both flashes, white success and red miss, including old recordings.
   if (saved_lcancel_flash >= 0) {
     options.te_options2 = mu_lcancel_with_flash_mode(options.te_options2, saved_lcancel_flash);
-    lcancel::set_indicator(saved_lcancel_flash == MU_LCFLASH_MU_MISSED);
+    lcancel::set_flash_mode(saved_lcancel_flash);
   } else if (options.te_options2 & MU_LCFLASH_TE_ENABLE) lcancel::set_indicator(false);
   if (saved_lcancel_success >= 0)
     options.te_options2 = mu_lcancel_with_success_color(options.te_options2, saved_lcancel_success);
@@ -2188,6 +2266,16 @@ static float game_ui_scale(float client_height) {
   }();
   if (forced > 0.0f) return forced;
   return client_height > 1080.0f ? std::min(client_height / 1080.0f, 3.0f) : 1.0f;
+}
+// MELEE_TEST_MENU_STYLE=<0..5> (tests): the panel uses that menu style, and the standalone settings
+// window draws it the way the game does instead of its own old screen, so a hidden
+// MELEE_TEST_SETTINGS_SHOT run can capture any style. -1 when the variable is not set.
+static int test_menu_style() {
+  static const int forced = [] {
+    const char* v = std::getenv("MELEE_TEST_MENU_STYLE");
+    return v ? std::clamp(std::atoi(v), 0, 5) : -1;
+  }();
+  return forced;
 }
 bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
 
@@ -2971,7 +3059,8 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
   }
 
   if (slippi::native_practice::phase_shows_return_overlay(practice.phase,
-                                                          practice.in_practice)) {
+                                                          practice.in_practice) &&
+      !slippi::online::is_online_match()) {   // never over a match, whatever the phase says
     ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowBgAlpha(0.88f);
     ImGui::Begin("##native_practice_return", nullptr,
@@ -3141,7 +3230,9 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
+       << "\nmusicpacks " << (slippi::jukebox::music_packs_enabled() ? 1 : 0)
        << "\nonlinedelay " << slippi::online::config().delay
+       << "\noffline_delay " << (options.offline_delay ? 1 : 0)
        << "\nquickchat " << slippi::online::config().chat
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
@@ -3184,7 +3275,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nlowspec_prev_effects " << options.low_spec_previous.effects_level
        << "\nlowspec_prev_dlss " << options.low_spec_previous.dlss_mode
        << "\nlowspec_prev_subframe " << (options.low_spec_previous.subframe == SubFrameMode::Off ? 0 : options.low_spec_previous.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1)
-       << "\nlcancel_flash_mode " << mu_lcancel_flash_mode(options.te_options2, lcancel::indicator_enabled())
+       << "\nlcancel_flash_mode " << mu_lcancel_flash_mode(options.te_options2, lcancel::flash_mode())
        << "\nlcancel_success_flash " << mu_lcancel_success_color(options.te_options2)
        << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
        << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
@@ -3196,6 +3287,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
        << "\ngamelanguage " << host::g_game_language.load()
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
+       << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\ncpu_tech " << options.cpu_tech
        << "\ncpu_getup " << options.cpu_getup
        << "\ncpu_di " << options.cpu_di
@@ -3317,25 +3409,26 @@ static void engine_only_reason(const char* format, ...) {
 // One display choice on Game, Mods and the built-in codes page. TE choices use its native
 // effect; the MU choice stays in the renderer and is safe online. Locked TE choices stay locked.
 static bool settings_lcancel_flash(RenderOptions& options) {
-  static const char* modes[] = {"Off", "MU: missed (red)", "TE: missed (red)", "TE: success", "TE: both"};
+  static const char* modes[] = {"Off", "MU: missed (red)", "TE: missed (red)", "TE: success", "TE: both",
+                               "MU: success (green)", "MU: both (red / green)"};
   const bool have_te = options.native_source && source_port::mods::status().te_owned;
   const bool locked = have_te && (options.te_options2 & kTeLockSettings) != 0;
-  int mode = mu_lcancel_flash_mode(options.te_options2, lcancel::indicator_enabled());
+  int mode = mu_lcancel_flash_mode(options.te_options2, lcancel::flash_mode());
   bool changed = false;
-  ImGui::BeginDisabled(locked);
   if (ImGui::BeginCombo("L-cancel flash", modes[mode])) {
-    for (int i = 0; i < 5; ++i) {
-      const bool unavailable = i >= MU_LCFLASH_TE_MISSED && !have_te;
-      ImGui::BeginDisabled(unavailable);
+    for (int i : {0, 1, 5, 6, 2, 3, 4}) {
+      const bool te_mode = i >= MU_LCFLASH_TE_MISSED && i <= MU_LCFLASH_TE_BOTH;
+      const bool unavailable = te_mode && !have_te;
+      ImGui::BeginDisabled(unavailable || (te_mode && locked));
       if (ImGui::Selectable(modes[i], i == mode)) {
         mode = i;
         options.te_options2 = mu_lcancel_with_flash_mode(options.te_options2, mode);
         RenderOptions::live_te_options2() = options.te_options2;
-        if (mode >= MU_LCFLASH_TE_MISSED) {
+        if (te_mode) {
           options.te_options |= 0x10;  // Selecting a TE effect also enables its feature master.
           RenderOptions::live_te_options() = options.te_options;
         }
-        lcancel::set_indicator(mode == MU_LCFLASH_MU_MISSED);
+        lcancel::set_flash_mode(mode);
         changed = true;
       }
 #ifdef MELEE_NO_SLIPPI   // one engine: only the save can be missing
@@ -3345,17 +3438,21 @@ static bool settings_lcancel_flash(RenderOptions& options) {
       if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Requires the Source Port and a loaded 20XX TE save.");
 #endif
+      if (te_mode && locked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Unlock 20XX TE settings before selecting a TE effect.");
       ImGui::EndDisabled();
     }
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("MU: red on a miss, rendered outside the game; safe online.\n"
+    ImGui::SetTooltip("MU: red on a miss, green on success, or both. Works on both engines without 20XX TE.\n"
+                      "Rendered outside the game; safe online.\n"
                       "TE: the game's own effect, offline and outside Tournament Mode or TM-CE exercises.\n"
                       "TE success and missed are separate choices; Both combines them.\n"
                       "The same choice appears on Game, Mods and the built-in codes page.%s",
-                      locked ? "\nUnlock 20XX TE settings before changing this." : "");
+                      locked ? "\n20XX TE effects are locked; MU effects remain available." : "");
   if (mode == MU_LCFLASH_TE_SUCCESS || mode == MU_LCFLASH_TE_BOTH) {
+    ImGui::BeginDisabled(locked);
     int color = mu_lcancel_success_color(options.te_options2);
     static const char* colors[] = {"Off", "White", "Green"};
     if (settings_combo("Success flash", &color, colors, 3)) {
@@ -3366,8 +3463,8 @@ static bool settings_lcancel_flash(RenderOptions& options) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       ImGui::SetTooltip("Color on a successful L-cancel. Off leaves missed flashes unchanged.\n"
                         "White is TE's original success color; Green changes only the color.");
+    ImGui::EndDisabled();
   }
-  ImGui::EndDisabled();
   return changed;
 }
 
@@ -3665,7 +3762,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   ImGui::NewFrame();
   ImGuiStyle launcher_saved_style;
-  const bool launcher_old_look = g_fill_window.load(std::memory_order_relaxed);
+  const bool launcher_old_look = g_fill_window.load(std::memory_order_relaxed) && test_menu_style() < 0;
   if (launcher_old_look) {
     launcher_saved_style = ImGui::GetStyle();
     ImGui::GetStyle() = g_input_overlay_style;
@@ -3681,6 +3778,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (initial >= 0) state.active_tab = std::clamp(initial, 0, 7);
     else if (const char* tab = std::getenv("MELEE_TEST_SETTINGS_TAB"))
       state.active_tab = std::clamp(std::atoi(tab), 0, 7);
+    if (test_menu_style() >= 0) options.overlay_style = test_menu_style();
   }
   const auto reset_settings_home = [&state](const char* why) {
     if (g_ui_diag) host::log("ui diag: settings reset to home (%s), tab %d", why, state.active_tab);
@@ -3729,7 +3827,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // controls continue editing the same D3D12Options values and persistence file.
   // The launcher's Settings window always shows the old (0.6.61) settings screen, whatever
   // appearance or legacy choice the game uses; the chosen appearance is restored and saved as is.
-  const bool launcher_window = g_fill_window.load(std::memory_order_relaxed);
+  const bool launcher_window = g_fill_window.load(std::memory_order_relaxed) && test_menu_style() < 0;
   if (launcher_window && !state.legacy_presentation) {
     state.legacy_saved_appearance = options.overlay_style;
     state.legacy_presentation = true;
@@ -3853,6 +3951,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                          ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   net_overlay::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   replay_bar::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y, state.open || state.menu_open || state.practice_open || state.fill_window);
+  screen_label::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
@@ -3963,7 +4062,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(4.0f,2.0f));
       if (g_settings_classic_font) ImGui::PushFont(g_settings_classic_font);
     }
-    state.fill_window = g_fill_window.load(std::memory_order_relaxed);
+    state.fill_window = g_fill_window.load(std::memory_order_relaxed) && test_menu_style() < 0;
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float motion_scale = std::max(0.1f, display.y / 480.0f);
     if (state.fill_window) {
@@ -4179,6 +4278,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           // The v0.6.6 layout began with the category tabs, not the modern
           // oversized SETTINGS banner.
           ImGui::SetCursorPos(ImVec2(8, 12));
+        } else if (wide_detail_theme) {
+          // Wide tabs: settings_wide_home has already drawn this style's header and its title.
+          // Drawing the shared banner as well put a second SETTINGS on top of it.
+          ImGui::SetCursorPos(ImVec2(20, 56));
         } else {
           ImGui::PushFont(settings_heading_font());
           ImGui::TextUnformatted("SETTINGS");
@@ -4354,7 +4457,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         radial_detail_page ? ImVec2(14.0f, 9.0f) : ImVec2(12.0f, 8.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, old_menu ? ImVec2(10.0f, 5.0f) : classic_menu ? ImVec2(5.0f, 4.0f) :
         gd_page ? ImVec2(4.0f * gd_scale, 4.0f * gd_scale) : ImVec2(12.0f, 12.0f));
-    ImVec2 settings_content_size = gd_page ? ImVec2(532.0f * gd_scale, 306.0f * gd_scale) : ImVec2(0, -48);
+    // GD Melee, in the kit's 640x480 space: the list starts at 84 and the hint bar's top is at 398.
+    // The list ends a clear gap above the bar and holds a whole number of rows (30 high, 4 apart),
+    // so a row at rest is not left cut along the bar.
+    constexpr float kGdListTop = 84.0f, kGdHintTop = 398.0f, kGdHintGap = 8.0f;
+    constexpr float kGdRowHeight = 30.0f, kGdRowSpacing = 4.0f, kGdRowPitch = kGdRowHeight + kGdRowSpacing;
+    const float gd_list_height =
+        std::floor((kGdHintTop - kGdHintGap - kGdListTop + kGdRowSpacing) / kGdRowPitch) * kGdRowPitch - kGdRowSpacing;
+    ImVec2 settings_content_size = gd_page ? ImVec2(532.0f * gd_scale, gd_list_height * gd_scale) : ImVec2(0, -48);
     if (options.overlay_style == 3) {
       const ImVec2 window_pos = ImGui::GetWindowPos(), window_size = ImGui::GetWindowSize();
       constexpr float kRadialDetailSideInset = 64.0f;
@@ -4374,6 +4484,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       // follows any other scroll change (scrollbar drag, keyboard or controller navigation).
       ImGuiWindow* content = ImGui::GetCurrentWindow();
       ImGuiStorage* storage = ImGui::GetStateStorage();
+      // GD Melee: the rows report where they are this frame (settings_gd_row).
+      g_settings_gd_list = gd_page ? content : nullptr;
+      g_settings_gd_snap_found = false;
+      g_settings_gd_focus_seen = false;
       const ImGuiID target_id = ImGui::GetID("##smooth_scroll_target");
       const ImGuiID applied_id = ImGui::GetID("##smooth_scroll_applied");
       const float current = content->Scroll.y;
@@ -5070,10 +5184,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::Separator();
     texpack::refresh_packs();
     const auto installed = texpack::packs();
-    ImGui::TextUnformatted("Texture packs");
+    ImGui::TextUnformatted("HUD and texture packs");
     ImGui::SameLine();
     if (ImGui::SmallButton("+ Add")) texpack::open_packs_folder();
-    wrapped_tooltip("Opens the TexturePacks folder. Put a pack folder in there and it appears in this list.");
+    wrapped_tooltip("Opens TexturePacks. Drop a folder of replacement PNGs there; HUD, menus, and stages are supported.");
+    ImGui::TextWrapped("Texture packs can replace the HUD, menu art, and stage textures. Put a pack folder in TexturePacks, then turn it on here.");
     if (installed.empty()) {
       ImGui::TextWrapped("None installed. Press + Add and drop a pack folder in.");
     } else {
@@ -5206,6 +5321,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Saves every texture the game draws into Dump\\Textures\\GALE01 with the exact\n"
                           "filenames a replacement has to use. Only useful if you are making a pack.");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Open texture dump")) texpack::open_dump_folder();
       if (RenderOptions::kPathTracingAvailable) {
         ImGui::BeginDisabled(!path_available);
         if (settings_toggle("DXR diffuse path tracing (experimental)", &options.path_tracing)) changed = true;
@@ -5271,6 +5388,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::PushItemWidth(330.0f);
     int music = slippi::jukebox::user_volume();
     if (settings_slider("Music", &music, 0, 100, "%d%%")) { slippi::jukebox::set_user_volume(music); changed = true; }
+#ifndef MELEE_NO_SLIPPI
+    bool use_music_packs = slippi::jukebox::music_packs_enabled();
+    if (settings_toggle("Use custom music", &use_music_packs)) {
+      slippi::jukebox::set_music_packs_enabled(use_music_packs);
+      changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open music packs")) slippi::jukebox::open_music_packs_folder();
+    ImGui::TextWrapped("Replace menu and stage tracks with HPS or common audio files, or add a folder of tracks for random picks. Vanilla audio mode keeps the disc music; open the folder for the naming guide.");
+#endif
     // With a game running the device holds the live value. Without one, which is the settings
     // window the launcher opens, the saved value is all there is: reading back from an audio module
     // that was never opened returned zero every frame and dragged the slider back to it.
@@ -6028,7 +6155,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               {0x8000u, "Color overlays", "Fighters turn green on the frames they can act, to show frame holes.", false},
             };
             ImGui::TextWrapped("Always on with 20XX TE: everything unlocked, 4 stock / 8 minute / friendly fire rules at start, "
-                               "C-Stick in 1P modes, neutral spawns, no results screen (A+B for a rematch), UCF, "
+                               "C-Stick in 1P modes, neutral spawns, A+B at the end of a match for a rematch, UCF, "
                                "D-pad up/down on character select for rumble.");
             const bool te_locked = (options.te_options2 & 0x40000u) != 0;
             for (const auto& feature : te_features2) {
@@ -6067,6 +6194,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ImGui::Separator();
         }
         ImGui::TextUnformatted("Cosmetic mods");
+        bool random_stage_skins = host::cosmetics::random_stage_skins();
+        if (ImGui::Checkbox("Random installed stage skin each match", &random_stage_skins)) {
+          std::string error;
+          if (!host::cosmetics::set_random_stage_skins(random_stage_skins, &error)) mod_message = error;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Choose an installed skin for the stage being played, starting next match.\n"
+                            "Online uses only skins with matching gameplay data. Your fixed choices are saved.");
         ImGui::TextWrapped("Imports use one shared native profile. Stage DATs that fail the exact-ISO "
                            "visual check use the clean disc resource online. Changes take effect after restart.");
         ImGui::TextWrapped("On the character select screen, L and R step the highlighted costume through "
@@ -6080,6 +6215,30 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                             "Stage DATs use only their matching disc file. Unsafe stage changes stay offline.\n"
                             "A portrait or stock icon PNG works too when its name says the costume\n"
                             "(\"Fox Green.png\", \"PlFxGr stock.png\"), alone or as a ZIP of pictures.");
+        ImGui::SameLine();
+        static std::string stage_dat_path;
+        static int stage_dat_target = 0;
+        if (ImGui::Button("Add stage DAT...")) {
+          stage_dat_path = host::cosmetics::choose_import_file();
+          if (!stage_dat_path.empty()) ImGui::OpenPopup("Import stage DAT");
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Import a raw stage DAT with any filename. Choose which stage it replaces; no ZIP is required.");
+        if (ImGui::BeginPopupModal("Import stage DAT", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          static const auto slots = host::cosmetics::stage_slots();
+          std::vector<const char*> names;
+          for (const auto& slot : slots) names.push_back(slot.name.c_str());
+          ImGui::TextWrapped("Choose the stage this DAT replaces. Full custom stages are available offline.");
+          ImGui::SetNextItemWidth(280.f);
+          settings_combo("Stage to replace", &stage_dat_target, names.data(), (int)names.size());
+          if (ImGui::Button("Import stage")) {
+            mod_message = host::cosmetics::import_stage_dat(stage_dat_path, slots[stage_dat_target].target_path).message;
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
         ImGui::SameLine();
         // A portrait or stock icon for one costume, with no costume file: the player picks the costume.
         if (ImGui::Button("Add portrait...")) ImGui::OpenPopup("add_portrait");
@@ -6210,22 +6369,113 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> effects;
           for (const auto& asset : installed_mods) {
             if (asset.kind == "character_costume") characters[asset.character][asset.costume].push_back(&asset);
-            else if (asset.kind == "stage_visual" && asset.available) stages[asset.costume].push_back(&asset);
+            // One row per disc file: two imports of the same file can carry different labels.
+            else if (asset.kind == "stage_visual" && asset.available) stages[asset.target_path].push_back(&asset);
             else if (asset.kind == "character_portrait") pictures[asset.character + ", " + asset.costume].push_back(&asset);
             else if (asset.kind == "effect_visual") effects[asset.character][asset.costume].push_back(&asset);
           }
           static std::string rename_id;
           static std::array<char, 97> rename_text{};
+          // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=skins): the list opens with every fighter
+          // that has a skin, and comes into view once.
+          static const bool skins_shot = [] {
+            const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+            return target && std::strcmp(target, "skins") == 0;
+          }();
+          if (skins_shot) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
           if (ImGui::CollapsingHeader("Characters")) {
+            {
+              static int scroll_frames = 0;
+              if (skins_shot && scroll_frames < 30) { ImGui::SetScrollHereY(0.0f); ++scroll_frames; }
+            }
+            // Every fighter with each of its color slots, in the game's order: one row per slot with
+            // the picture and the name of the skin it wears. A skin belongs to one slot (the costume
+            // file it replaces), so a slot's picker lists the skins installed for that slot.
+            struct CostumeRow {
+              std::string label, target, picture;   // picture: the slot's added portrait, when switched on
+              std::vector<const CosmeticAsset*> variants;
+            };
+            struct FighterRows { std::string node; size_t skins = 0; std::vector<CostumeRow> rows; };
+            static const std::vector<host::cosmetics::CostumeSlot> all_slots = host::cosmetics::costume_slots();
+            const auto slot_key = [](std::string name) {
+              name = name.substr(0, name.find('#'));
+              for (char& c : name) c = (char)std::tolower((unsigned char)c);
+              return name;
+            };
+            std::map<std::string, std::string> slot_pictures;
+            for (const auto& slot : pictures)
+              for (const CosmeticAsset* picture : slot.second)
+                if (picture->selected && !picture->preview_path.empty())
+                  slot_pictures[slot_key(picture->target_path)] = picture->preview_path;
+            std::vector<FighterRows> fighters;
+            std::map<std::string, bool> listed;   // the costume files that have a row
+            for (size_t i = 0; i < all_slots.size(); ++i) {
+              if (i == 0 || all_slots[i].character != all_slots[i - 1].character) {
+                fighters.emplace_back();
+                fighters.back().node = all_slots[i].character;
+              }
+              CostumeRow row;
+              row.label = all_slots[i].costume;
+              row.target = all_slots[i].target_path;
+              const std::string key = slot_key(row.target);
+              const auto picture = slot_pictures.find(key);
+              if (picture != slot_pictures.end()) row.picture = picture->second;
+              const auto fighter = characters.find(all_slots[i].character);
+              if (fighter != characters.end())
+                for (const auto& costume : fighter->second)
+                  if (slot_key(costume.second.front()->target_path) == key) {
+                    row.variants = costume.second;
+                    row.target = costume.second.front()->target_path;
+                    listed[costume.second.front()->target_path] = true;
+                  }
+              fighters.back().skins += row.variants.size();
+              fighters.back().rows.push_back(std::move(row));
+            }
+            for (auto& fighter : fighters) {
+              const std::string name = fighter.node;
+              if (fighter.skins)
+                fighter.node += " (" + std::to_string(fighter.skins) + (fighter.skins == 1 ? " skin)" : " skins)");
+              fighter.node += "###" + name;
+            }
+            // A costume file outside that list keeps a row under its own name, after the fighters.
             for (const auto& character : characters) {
-              if (!ImGui::TreeNode(character.first.c_str())) continue;
+              FighterRows other;
+              other.node = character.first + "###other " + character.first;
               for (const auto& costume : character.second) {
-                const auto& variants = costume.second;
-                const std::string& target = variants.front()->target_path;
+                const std::string& target = costume.second.front()->target_path;
+                if (listed.count(target)) continue;
+                const auto picture = slot_pictures.find(slot_key(target));
+                other.rows.push_back({costume.first, target, picture != slot_pictures.end() ? picture->second : std::string(),
+                                      costume.second});
+                other.skins += costume.second.size();
+              }
+              if (!other.rows.empty()) fighters.push_back(std::move(other));
+            }
+            const float tile_w = 34.0f, tile_h = 47.0f;   // a portrait is 136 by 188
+            for (const auto& character : fighters) {
+              if (skins_shot && character.skins) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+              if (!ImGui::TreeNode(character.node.c_str())) continue;
+              for (const auto& costume : character.rows) {
+                const auto& variants = costume.variants;
+                const std::string& target = costume.target;
                 ImGui::PushID(target.c_str());
-                ImGui::TextUnformatted(costume.first.c_str());
                 int current = 0;
-                std::vector<std::string> option_storage{"Vanilla"};
+                for (size_t i = 0; i < variants.size(); ++i)
+                  if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
+                // The picture the slot shows: the skin's own, else the costume's added one.
+                const std::string& worn_picture = current > 0 && !variants[(size_t)current - 1]->preview_path.empty()
+                    ? variants[(size_t)current - 1]->preview_path : costume.picture;
+                draw_cosmetic_tile(worn_picture, tile_w, tile_h);
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextUnformatted(costume.label.c_str());
+                if (variants.empty()) {
+                  ImGui::TextDisabled("Standard costume (no skins installed)");
+                  ImGui::EndGroup();
+                  ImGui::PopID();
+                  continue;
+                }
+                std::vector<std::string> option_storage{"Standard costume"};
                 // Two skins with one name are told apart by where they came from (the pack or the file).
                 std::map<std::string, int> same_name;
                 for (const CosmeticAsset* variant : variants) ++same_name[variant->name];
@@ -6235,13 +6485,40 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   option_storage.push_back(variants[i]->name + (twin ? " [" + from + "]" : "") +
                       (variants[i]->voice.empty() ? "" : " (voice)") +
                       (variants[i]->available ? "" : " (unavailable)"));
-                  if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
                 }
-                std::vector<const char*> option_names;
-                for (const auto& option : option_storage) option_names.push_back(option.c_str());
+                // The picker: each choice with its picture, its name and, once the game has judged
+                // it, what online play does with it.
                 int selected = current;
                 ImGui::SetNextItemWidth(280.0f);
-                if (settings_combo("##variant", &selected, option_names.data(), (int)option_names.size())) {
+                if (ImGui::BeginCombo("##variant", option_storage[(size_t)current].c_str(), ImGuiComboFlags_HeightLarge)) {
+                  float names_w = 0.0f;
+                  for (const auto& option : option_storage) names_w = std::max(names_w, ImGui::CalcTextSize(option.c_str()).x);
+                  for (int i = 0; i < (int)option_storage.size(); ++i) {
+                    const CosmeticAsset* item = i > 0 ? variants[(size_t)i - 1] : nullptr;
+                    ImGui::PushID(i);
+                    const ImVec2 at = ImGui::GetCursorScreenPos();
+                    if (ImGui::Selectable("##pick", i == current, 0, ImVec2(0.0f, tile_h))) selected = i;
+                    if (i == current) ImGui::SetItemDefaultFocus();
+                    if (ImGui::IsItemVisible()) {
+                      ImDrawList* draw = ImGui::GetWindowDrawList();
+                      draw_cosmetic_tile_at(draw, at, tile_w, tile_h, item ? item->preview_path : costume.picture);
+                      const char* online = !item || item->online_message.empty() ? nullptr :
+                          item->online_allowed ? "Online: stays on" : "Online: standard costume";
+                      const float text_x = at.x + tile_w + 8.0f, line_h = ImGui::GetTextLineHeight();
+                      draw->AddText(ImVec2(text_x, at.y + (online ? tile_h * 0.5f - line_h : (tile_h - line_h) * 0.5f)),
+                                    ImGui::GetColorU32(ImGuiCol_Text), option_storage[(size_t)i].c_str());
+                      if (online)
+                        draw->AddText(ImVec2(text_x, at.y + tile_h * 0.5f + 1.0f),
+                                      item->online_allowed ? IM_COL32(94, 214, 135, 255) : IM_COL32(255, 191, 64, 255), online);
+                    }
+                    // The row's width, so the list grows to fit the longest name.
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::Dummy(ImVec2(tile_w + 16.0f + names_w, 0.0f));
+                    ImGui::PopID();
+                  }
+                  ImGui::EndCombo();
+                }
+                if (selected != current) {
                   std::string error;
                   bool ok = selected == 0 ? host::cosmetics::disable_target(target, &error) :
                       host::cosmetics::select_variant(target, variants[(size_t)selected - 1]->id, &error);
@@ -6253,7 +6530,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 ImGui::TextDisabled("%zu %s", variants.size(), variants.size() == 1 ? "skin" : "skins");
                 if (current != 0) {
                   ImGui::SameLine();
-                  if (ImGui::SmallButton("Use Vanilla")) {
+                  if (ImGui::SmallButton("Use standard costume")) {
                     std::string error;
                     if (!host::cosmetics::disable_target(target, &error)) mod_message = error;
                     else { mod_message = host::cosmetics::last_message(); changed = true; }
@@ -6356,6 +6633,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   }
                   ImGui::TreePop();
                 }
+                ImGui::EndGroup();
                 ImGui::PopID();
               }
               ImGui::TreePop();
@@ -6403,7 +6681,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (!pictures.empty() && ImGui::CollapsingHeader("Portraits and stock icons", ImGuiTreeNodeFlags_DefaultOpen))
             for (const auto& slot : pictures) draw_resource_slot(slot.first, slot.second);
           if (!stages.empty() && ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
-            for (const auto& stage : stages) draw_resource_slot(stage.first, stage.second);
+            for (const auto& stage : stages) draw_resource_slot(stage.second.back()->costume, stage.second);
           if (!effects.empty() && ImGui::CollapsingHeader("Effects")) {
             if (ImGui::Button("Enable project effects")) {
               std::string error;
@@ -6484,6 +6762,18 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // Source Port plays its native version of the 20XX Hack Pack's AI (shim/mu_20xx_ai.c); the Static
     // Recomp runs the pack's own AI block, read from the player's copy of the pack's disc under Mods
     // (host/hackpack_ai.cpp). Offline matches only; online and replay playback never see it.
+    // Slippi's "Unlock All Characters and Stages", switchable. Off, the save file decides, so a new
+    // save starts with the original fighters and stages and the game hands out the rest as it does
+    // on a console. A network session always has everything (host.cpp apply_code_switches, and
+    // shim/mu_gecko.c on the Source Port).
+    if (settings_toggle("Unlock everything", &options.unlock_all)) {
+      RenderOptions::live_unlock_all() = options.unlock_all;
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("On: every fighter, stage and mode is available from the start.\n"
+                        "Off: your save file decides, and the game unlocks things as you play.\n"
+                        "Offline only: online play always has everything. Takes effect on the next screen.");
     ImGui::TextUnformatted("CPU players");
     if (settings_toggle("20XX CPUs", &options.cpu_20xx)) {
       RenderOptions::live_cpu_20xx() = options.cpu_20xx;
@@ -6630,6 +6920,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Frames of your own input held back before the game uses it, as in Slippi Dolphin.\n"
                           "Higher means fewer rollbacks on a bad connection and more input lag.\n"
                           "2 is Slippi's default. Takes effect from the next online match.");
+      ImGui::SameLine();
+      if (settings_toggle("Also use offline", &options.offline_delay)) {
+        RenderOptions::live_offline_delay() = options.offline_delay;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Use this frame delay in all offline gameplay, including VS, Training and 1P modes.\n"
+                          "Both engines. Menus and replay playback keep their normal input.\n"
+                          "Online matches use Frame delay regardless of this checkbox.");
       // A player ran at 3 without knowing and reported the game as feeling slow. The cost is
       // shown whenever the value is above the default; the tooltip alone is not seen on a controller.
       if (delay > 2)
@@ -7299,7 +7598,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("From:\n%s\nCodes that only write game variables run. Other codes are PowerPC and cannot run in this build.", user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
-      settings_hint("None. Put a GeckoCodes.ini next to port-settings.ini to add codes.");
+      settings_hint("None yet. Use \"+ Add Gecko code\" below and paste a code, or put a GeckoCodes.ini next to port-settings.ini.");
     } else {
       for (user_gecko::Code& c : user_gecko::codes()) {
         ImGui::PushID(&c);
@@ -7324,7 +7623,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("From:\n%s\nOther codes are PowerPC and run on the Static Recomp engine.", user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
-      settings_hint("None. Codes you add on the Static Recomp engine are listed here too.");
+      settings_hint("None yet. Use \"+ Add Gecko code\" below and paste a code. Codes you add on the Static Recomp engine are listed here too.");
     } else {
       // The rule for settings one engine runs: each code keeps its switch (its Static Recomp
       // setting), greyed here, and hovering it says why.
@@ -7349,19 +7648,20 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
     }
 #endif
+    ImGui::Separator();
+    if (gecko_add_code_button()) changed = true;
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
-    // Always shown: a code the other player does not have desyncs the match.
-    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "WARNING: Gecko codes can cause DESYNCS online.");
-    ImGui::TextWrapped("Codes change the game itself. Online, both players need exactly the same codes switched on, "
-                       "or the match falls out of sync. Switch codes off before playing online unless your opponent has them too.");
+    ImGui::TextWrapped("Imported Gecko codes run offline. They are suspended online and during replay playback.");
+    settings_hint("Restart the game after importing codes so they can run. Use codes for Melee NTSC 1.02; "
+                  "codes for another revision or conflicting mods may not work.");
     ImGui::Separator();
     ImGui::TextUnformatted("Your codes");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Your own codes, in Dolphin's format, from:\n%s\n"
-                        "Codes that write work. On the Static Recomp that includes writes into the game's\n"
-                        "code (the functions they change run from memory). C2 injections cannot run and\n"
-                        "are shown greyed out, as are code patches on the Source Port.",
+                        "Static Recomp runs the console Gecko handler, including C0/C2 assembly,\n"
+                        "pointers, conditions, loops and register operations.\n"
+                        "Source Port supports compatible game-variable codes and native equivalents.",
                         user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
       settings_hint("No codes yet. Paste one below, or put a GeckoCodes.ini next to port-settings.ini.");
@@ -7379,8 +7679,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::string tip;
           for (const std::string& n : c.notes) tip += n + "\n";
           if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
-          else if (c.patches_code) tip += "Changes the game's code: the functions it touches run from memory.\nDesyncs online unless your opponent runs it too.";
-          else tip += "Desyncs online unless your opponent runs it too.";
+          else tip += "Runs offline only. Restart after importing new codes.";
           ImGui::SetTooltip("%s", tip.c_str());
         }
         ImGui::PopID();
@@ -7388,32 +7687,31 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (!to_remove.empty()) { user_gecko::remove(to_remove); user_gecko::save(); changed = true; }
     }
     ImGui::Separator();
-    // Paste in a code without needing to find and edit GeckoCodes.ini by hand. A pasted block may
-    // carry its own "$Name" line (Dolphin's format, what most sites hand out); if it does, that name
-    // is used and the typed one below is just what is offered until then.
-    {
-      static char add_name[64] = "";
-      static char add_body[2048] = "";
-      static std::string add_error;
-      if (ImGui::Button("+ Add Gecko code")) { add_name[0] = 0; add_body[0] = 0; add_error.clear(); ImGui::OpenPopup("add_gecko_code"); }
-      if (ImGui::BeginPopup("add_gecko_code")) {
-        ImGui::TextUnformatted("Name");
-        ImGui::SetNextItemWidth(300.0f);
-        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-        ImGui::InputText("##gecko_name", add_name, sizeof add_name);
-        ImGui::TextUnformatted("Code (XXXXXXXX YYYYYYYY, one pair per line -- paste the whole thing, name line and all, and it wins)");
-        ImGui::InputTextMultiline("##gecko_body", add_body, sizeof add_body, ImVec2(400.0f, 140.0f));
-        if (!add_error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", add_error.c_str());
-        if (ImGui::Button("Add")) {
-          add_error = user_gecko::add(add_name, add_body);
-          if (add_error.empty()) { user_gecko::save(); changed = true; ImGui::CloseCurrentPopup(); }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-      }
+    if (gecko_add_code_button()) changed = true;
     }
+    if (gd_page && g_settings_gd_list && g_settings_gd_list == ImGui::GetCurrentWindow() &&
+        g_settings_gd_snap_found) {
+      // GD Melee: once the wheel or the scrollbar has stopped, the nearest row's top moves to the
+      // top of the list, so the list rests on whole rows instead of one cut along the hint bar.
+      // Only within half a row, and never when it would push the focused row out of view.
+      ImGuiWindow* content = g_settings_gd_list;
+      ImGuiStorage* storage = ImGui::GetStateStorage();
+      const ImGuiID target_id = ImGui::GetID("##smooth_scroll_target");
+      const float current = content->Scroll.y;
+      const float target = storage->GetFloat(target_id, current);
+      const float snapped = std::clamp(current + g_settings_gd_snap, 0.0f, content->ScrollMax.y);
+      const float shift = snapped - current;   // the rows move up by this much
+      const float row_height = kGdRowHeight * gd_scale;
+      const bool keeps_focus = !g_settings_gd_focus_seen ||
+          (g_settings_gd_focus_top - shift >= content->InnerRect.Min.y - 1.0f &&
+           g_settings_gd_focus_top + row_height - shift <= content->InnerRect.Max.y + 1.0f);
+      const bool at_rest = std::fabs(target - current) < 0.5f && ImGui::GetIO().MouseWheel == 0.0f &&
+                           !ImGui::IsMouseDown(ImGuiMouseButton_Left) && content->ScrollTarget.y == FLT_MAX;
+      if (at_rest && keeps_focus && std::fabs(shift) >= 1.0f &&
+          std::fabs(g_settings_gd_snap) <= kGdRowPitch * 0.5f * gd_scale)
+        storage->SetFloat(target_id, snapped);
     }
+    g_settings_gd_list = nullptr;
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
     ImGui::PopStyleVar(3);

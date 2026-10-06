@@ -56,6 +56,8 @@ struct State {
   bool match_marked = false;
   bool connected_logged = false;
   bool over_logged = false;
+  bool played = false;       // a game of this session reached its first frame
+  bool exit_asked = false;
   mu_net::SessionState last_state = mu_net::SessionState::Idle;
   // The session asks for a speed from its own thread; the simulation thread applies it.
   std::atomic<double> speed{1.0};
@@ -66,6 +68,21 @@ State& g() { static State s; return s; }
 bool refuse(const char* name, const char* expected) {
   std::fprintf(stderr, "%s %s\n", name, expected);
   return false;
+}
+
+// The session has nothing more for the game: it failed before a match, or its games are played.
+// The game library of the build without the Slippi layer handles both itself (a message, then the
+// title screen). The library of the build with it has no such way out of the waiting scene and no
+// scene to go to after the match, so there the process ends: 2 when no game was played, 0 after one.
+// The host's exit sequence then calls shutdown(), which writes the result file and stops the session.
+void session_done() {
+#ifndef MELEE_NO_SLIPPI
+  State& s = g();
+  if (s.exit_asked) return;
+  s.exit_asked = true;
+  host::log("p2p: leaving the game (%s)", s.played ? "the session's game is over" : "no match was played");
+  host::request_exit(s.played ? 0 : 2);
+#endif
 }
 
 bool parse_number(const char* text, int base, long low, long high, long* out) {
@@ -91,11 +108,19 @@ bool parse_fighter(const std::string& text, uint8_t* character, uint8_t* color) 
 // The game content and rule set both sides must share. Fixed for now: the retail 1.02 disc under
 // the project's singles rules. A real hash of the loaded disc and gameplay mods replaces this one
 // function, and two builds that load different content then refuse each other in the handshake.
+// The rules profile names the game library: the one built with the Slippi layer applies a different
+// set of online rule codes than the one built without it, so the same inputs would not give the same
+// match. Profile 1 is the library without that layer, 2 the one with it; a game of each kind then
+// refuses the other in the handshake instead of desyncing a few seconds in.
 void content_identity(mu_net::Bytes32& content_hash, uint32_t& rules_profile) {
   static const char kContent[] = "retail-1.02";
   content_hash.fill(0);
   std::memcpy(content_hash.data(), kContent, sizeof kContent - 1);
+#ifdef MELEE_NO_SLIPPI
   rules_profile = 1;
+#else
+  rules_profile = 2;
+#endif
 }
 
 // There is no negotiation message yet, so everything in the descriptor comes from options both
@@ -145,6 +170,7 @@ void publish() {
   shared.in_menus.store(live && state != SessionState::Playing, std::memory_order_relaxed);
   shared.local_slot.store(s.opt.slot, std::memory_order_relaxed);
   shared.ping_ms.store((int)(counters.ping_us / 1000), std::memory_order_relaxed);
+  if (state == SessionState::Playing) s.played = true;
   if (state == s.last_state) return;
   s.last_state = state;
   const bool path_up = state == SessionState::Handshaking || state == SessionState::Verifying ||
@@ -153,7 +179,12 @@ void publish() {
     s.connected_logged = true;
     host::log("p2p: connected to the other player (local UDP port %u)", (unsigned)s.session->local_port());
   }
-  if (state == SessionState::Failed) host::log("p2p: failed: %s", s.session->failure_text().c_str());
+  if (state == SessionState::Failed) {
+    host::log("p2p: failed: %s", s.session->failure_text().c_str());
+    // Before a match: the game would wait in its loading scene with no way out. A failure during a
+    // match is left to the game, which ends the match as disconnected and then asks to clean up.
+    if (!s.played) session_done();
+  }
 }
 
 // One result file per game: the first under the name given, game n under "<name>.g<n><extension>".
@@ -218,6 +249,7 @@ bool on_command(uint8_t cmd, const uint8_t* payload, uint32_t size, std::vector<
         reply.assign(kMatchStateSize, 0);
         reply[0] = kStateError;
         std::memcpy(reply.data() + kMatchStateError, text, sizeof text);
+        session_done();
         return true;
       }
       advance_series();
@@ -232,6 +264,7 @@ bool on_command(uint8_t cmd, const uint8_t* payload, uint32_t size, std::vector<
           reply[0] = kStateError;
           std::memcpy(reply.data() + kMatchStateError, text, sizeof text);
           publish();
+          session_done();
           return true;
         }
       }
@@ -269,6 +302,7 @@ bool on_command(uint8_t cmd, const uint8_t* payload, uint32_t size, std::vector<
     }
     case kCleanup:
       close_session();
+      session_done();
       return true;
     default:
       // The other session commands (searching, chat, ranked reports) have nothing behind them here:
@@ -366,6 +400,7 @@ void start(bool harness) {
   const mu_net::IdentityFile loaded = mu_net::load_or_create_identity(o.identity_path, identity, &error);
   if (loaded == mu_net::IdentityFile::Failed) {
     host::log("p2p: identity file %s cannot be used: %s", o.identity_path.c_str(), error.c_str());
+    session_done();
     return;
   }
   host::log("p2p: identity %s (%s %s)", identity.id().c_str(), loaded == mu_net::IdentityFile::Created ? "created" : "from",
@@ -406,9 +441,12 @@ void start(bool harness) {
     started = s.session->start(descriptor, o.slot, endpoint);
   }
   if (!started) {
-    // Without a started session the game is not asked to enter a match: it boots as usual.
+    // Without a started session the game is not asked to enter a match: it boots as usual (the build
+    // without the Slippi layer), or the run ends with the failure code (the build with it, which a
+    // launcher started for this one match).
     host::log("p2p: the session did not start: %s", s.session->failure_text().c_str());
     s.closed = true;
+    session_done();
     return;
   }
   host::netplay::config().delay = o.delay;
