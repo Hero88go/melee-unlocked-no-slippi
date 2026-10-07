@@ -94,6 +94,23 @@ target_link_libraries(mu_content_transition_test PRIVATE game_flags)
 target_include_directories(mu_content_transition_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME native_content_transition COMMAND mu_content_transition_test)
 
+set(CREDITS_PARTICLE_FUNCTION "${CMAKE_CURRENT_BINARY_DIR}/credits_particle_function.h")
+add_custom_command(OUTPUT "${CREDITS_PARTICLE_FUNCTION}"
+  COMMAND "${CONTENT_TEST_PYTHON}" "${REPO}/tools/native_major_fixture.py"
+    "${D}/src/melee/gm/gmstaffroll.c" "${CREDITS_PARTICLE_FUNCTION}" --function gm_801AB200_ptcl
+  DEPENDS "${REPO}/tools/native_major_fixture.py" "${D}/src/melee/gm/gmstaffroll.c"
+  VERBATIM)
+foreach(credits_variant native console)
+  add_executable(mu_credits_${credits_variant}_test EXCLUDE_FROM_ALL
+    tests/credits_particle.c "${CREDITS_PARTICLE_FUNCTION}")
+  set_target_properties(mu_credits_${credits_variant}_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+  target_include_directories(mu_credits_${credits_variant}_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  if(credits_variant STREQUAL "native")
+    target_compile_definitions(mu_credits_${credits_variant}_test PRIVATE MU_NATIVE)
+  endif()
+  add_test(NAME credits_particle_${credits_variant} COMMAND mu_credits_${credits_variant}_test)
+endforeach()
+
 if(NOT MU_NO_SLIPPI)   # tests the replay recording, which a MU_NO_SLIPPI tree does not have (option: see below)
 add_executable(mu_record_start_test tests/record_start.c)
 set_target_properties(mu_record_start_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
@@ -112,6 +129,16 @@ add_executable(mu_alarm_test EXCLUDE_FROM_ALL tests/alarm.c shim/mu_os.c)
 set_target_properties(mu_alarm_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_alarm_test PRIVATE game_flags)
 add_test(NAME native_alarm COMMAND mu_alarm_test)
+
+add_executable(mu_preload_compaction_test EXCLUDE_FROM_ALL
+  tests/preload_compaction.c "${D}/src/sysdolphin/baselib/archive.c")
+set_target_properties(mu_preload_compaction_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_preload_compaction_test PRIVATE game_flags)
+target_compile_options(mu_preload_compaction_test PRIVATE
+  -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
+target_link_options(mu_preload_compaction_test PRIVATE ${LOW_IMAGE_LINK_OPTIONS}
+  -Wl,--image-base,0x90000000 -Wl,--gc-sections)
+add_test(NAME native_preload_compaction COMMAND mu_preload_compaction_test)
 
 # Exercise the actual private sound-bank bookkeeping without disc/renderer dependencies.
 add_executable(mu_synth_bank_test EXCLUDE_FROM_ALL tests/synth_bank.c)
@@ -152,7 +179,7 @@ add_test(NAME native_card_endian COMMAND mu_card_endian_test)
 
 # Every annotated DISC_STRUCT field sits at its console offset in the host layout (tools/disc_offset_audit.py).
 # An 8-byte pointer field in a disc struct shifted Link's attributes from +0x94 and went unnoticed.
-add_test(NAME native_disc_offsets COMMAND "${MELEE_PYTHON}" "${REPO}/tools/disc_offset_audit.py" --build-dir "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME native_disc_offsets COMMAND "${MELEE_PYTHON}" "${REPO}/tools/disc_offset_audit.py")
 
 # ---- source implementations of assembly-only SDK maths ----
 # Native game builds never consume generated PPC translations or a retail DOL.
