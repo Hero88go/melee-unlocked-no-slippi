@@ -1353,11 +1353,11 @@ void clean_mode_music_frame();
 // (recomp/gecko.py: TWO_WAY_TEXT and the "Results Screen Offline" port codes). A network session,
 // from matchmaking to the end of the match, always plays as Slippi does: everything unlocked and no
 // results screen. Offline the player's "Unlock everything" setting decides the first, and the
-// results screen is shown.
+// results screen is shown unless the player turned "Show results screen" off.
 static void apply_code_switches() {
   const bool online = slippi::online::session_mode() >= 0;
   gecko::option_unlock_all = online || gx::RenderOptions::live_unlock_all();
-  gecko::option_offline_results = !online;
+  gecko::option_offline_results = !online && gx::RenderOptions::live_results_screen();
 }
 void apply_wide_fighter_draw() {
   apply_code_switches();

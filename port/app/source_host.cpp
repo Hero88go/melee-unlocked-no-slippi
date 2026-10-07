@@ -971,7 +971,8 @@ uint32_t h_game_options2() {
 uint32_t h_game_options3() {
   if (g_replaying) return g_replay_feature_options3;
   return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits() |
-         (gx::RenderOptions::live_unlock_all() ? 0u : MU_GAME_OPTION3_LOCKED_CONTENT);
+         (gx::RenderOptions::live_unlock_all() ? 0u : MU_GAME_OPTION3_LOCKED_CONTENT) |
+         (gx::RenderOptions::live_results_screen() ? 0u : MU_GAME_OPTION3_SKIP_RESULTS);
 }
 uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |
