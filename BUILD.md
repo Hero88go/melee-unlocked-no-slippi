@@ -6,7 +6,7 @@ Windows x64 only. Two parts, built with two compilers, that end up in one folder
 ## Toolchains
 
 - Visual Studio 2022 Build Tools (MSVC, x64) with a Windows 10 or 11 SDK (its `dxc.exe` is used).
-- CMake 3.25 or newer, Python 3.10 or newer, Git.
+- CMake 3.25 or newer, Python 3, Git.
 - MinGW-w64 GCC 14 or newer with Ninja (a WinLibs build has both). The game needs GCC.
 
 ## 1. Game sources
@@ -31,7 +31,7 @@ Only `hle_decls.h` and `guest_symbols.h` from that folder are used; nothing else
 ## 3. The game library (GCC)
 
     cmake -S sourceport/game -B build-game -G Ninja -DCMAKE_BUILD_TYPE=Release ^
-      -DCMAKE_TOOLCHAIN_FILE=sourceport/cmake/mingw-w64-x86_64.cmake ^
+      -DCMAKE_TOOLCHAIN_FILE=%CD%/sourceport/cmake/mingw-w64-x86_64.cmake ^
       -DMELEE_MINGW_ROOT=<folder holding bin/gcc.exe> -DMELEE_PYTHON=<python.exe> -DMU_NO_SLIPPI=ON
     cmake --build build-game --target melee_game
 
@@ -40,7 +40,7 @@ This writes `melee_game.dll`, `melee_game.dbg` and `melee_game.snapexcl` into `b
 ## 4. The application (MSVC)
 
     cmake -S . -B build-host -G "Visual Studio 17 2022" -A x64
-    cmake --build build-host --config Release --target melee_source melee_unlocked
+    cmake --build build-host --config Release --target melee_source
 
 This writes `build-host/port/Release/melee_source.exe`. Copy the three `melee_game.*` files from
 step 3 beside it (always all three together), and the `lang` folder.
@@ -56,11 +56,3 @@ Your own NTSC 1.02 ISO is never part of this tree. Pass it on the command line:
     melee_source.exe --iso <path to your Melee NTSC 1.02 ISO>
 
 It can sit anywhere; nothing is written to it.
-
-## Packaging
-
-Run `tools/package_source_port.py` with `--host-dir build-host/port/Release`,
-`--game-dir build-game`, `--from-package <existing release folder>`, and a new `--out` folder.
-Add `--zip` to create a downloadable archive. The source release folder supplies the shared
-Visual C++ runtime, DSP coefficient table, UI resources and licenses; saves and personal settings
-are not copied. Optional graphics SDK files are included only when the host build produced them.

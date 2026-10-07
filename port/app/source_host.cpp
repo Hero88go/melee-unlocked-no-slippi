@@ -27,10 +27,6 @@
 #include <unordered_set>
 #include <vector>
 #include "host.h"
-#include "offline_input_delay.h"
-#include "disc_archive.h"
-#include "card_backup.h"
-#include "replay_bar.h"
 #include "audio.h"
 #include "audio_core.h"
 #include "ax_ucode.h"
@@ -39,6 +35,8 @@
 #include "render_options.h"
 #include "training_overlay.h"
 #include "lcancel.h"
+#include "offline_input_delay.h"
+#include "disc_archive.h"
 #include "user_gecko.h"
 #include "mu_host.h"
 #include "ppc.h"
@@ -60,6 +58,8 @@
 #include "native_recording_codes.h"
 #include "slippilib/SlippiGame.h"
 #endif
+#include "replay_bar.h"     // both builds: the on-screen labels
+#include "card_backup.h"    // both builds: save backups
 #include "source_mod_overlay.h"
 #include "mod_profile.h"
 #include "net_trace.h"
@@ -69,6 +69,8 @@
 #include "pack_skin_rule.h"
 #include "disc_skin_scan.h"
 #include "cosmetic_mods.h"
+#include "stage_dat_safety.h"
+#include "pack_audio_safety.h"
 #include "texture_pack.h"
 #include "window.h"
 
@@ -86,6 +88,23 @@ constexpr uint32_t LOCKED_CACHE_SIZE = 16u << 10;
 // Right after MEM1, so the game's own statics (the font atlas, static textures) have a physical
 // address the GX texture and display-list registers can hold: 26 bits, the first 64 MB.
 constexpr uintptr_t GAME_IMAGE_BASE = 0x82800000u;
+
+// The game library must load at GAME_IMAGE_BASE. Everything the host does before loading it (mod
+// scans, cosmetics, the music pack index) allocates, and a heap block placed there moved the library
+// elsewhere and stopped the Source Port at startup. The range is held from before main and given
+// back the moment the library is loaded.
+struct GameImageReservation {
+  void* base = nullptr;
+  GameImageReservation() {
+    // Generous: the image's own size is checked again after the load.
+    base = VirtualAlloc((void*)GAME_IMAGE_BASE, 0x04000000u, MEM_RESERVE, PAGE_NOACCESS);
+  }
+  void release() {
+    if (base) VirtualFree(base, 0, MEM_RELEASE);
+    base = nullptr;
+  }
+};
+GameImageReservation g_game_image_reservation;
 
 MuGameApi g_game{};
 std::string g_dll = "melee_game.dll";
@@ -318,10 +337,8 @@ void apply_detected_mods() {
   g_mod_layers.insert(g_mod_layers.end(), found.layers.begin(), found.layers.end());
 }
 
-// Decides, once at load, which of the packs' costume files stay on in the retail view. A file equal
-// to the standard costume, or with the standard skeleton, cannot change what the game simulates:
-// it is served from the pack in every mode. Anything else follows the retail alias like the pack's
-// other files. Only runs when a pack changed a file the standard game has.
+// Validate local cosmetics against the original disc before keeping them in the retail view.
+// Gameplay files and unverified replacements continue to use their original copies online.
 void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& base_paths,
                                 const std::vector<FstFile>& base_fst) {
   g_pack_skins.clear();
@@ -329,7 +346,10 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
   auto& notes = mods::status().pack_skins;
   notes.clear();
   for (const auto& file : g_mod_overlay.files()) {
-    if (!skins::is_costume_file(file.path)) continue;
+    const bool costume = skins::is_costume_file(file.path);
+    const bool stage = skins::is_stage_file(file.path);
+    const bool music = skins::is_music_file(file.path);
+    if (!costume && !stage && !music) continue;
     const auto now = g_paths.find(file.path);
     const auto base = base_paths.find(file.path);
     if (now == g_paths.end() || base == base_paths.end() || base_fst[base->second].dir) continue;
@@ -343,6 +363,13 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
     verdict.layer = name_at == std::string::npos ? file.profile
                     : std::filesystem::u8path(file.profile.substr(name_at + 1)).filename().u8string();
     const FstFile& standard = base_fst[base->second];
+    constexpr uint32_t limit = 64u * 1024 * 1024;
+    if (file.length > limit || standard.length > limit) {
+      verdict.reason = "replacement exceeds 64 MB";
+      notes.push_back({verdict.path, verdict.layer, verdict.reason, false, false});
+      g_pack_skins.push_back(std::move(verdict));
+      continue;
+    }
     std::vector<uint8_t> pack(file.length), clean(standard.length);
     if (pack.empty() || clean.empty() ||
         g_mod_overlay.read(file.start, pack.data(), file.length) != ModOverlay::Read::Success ||
@@ -350,14 +377,16 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
       verdict.reason = "the file could not be read";
     } else if (pack == clean) {
       verdict.identical = verdict.served = true;
-      verdict.reason = "same as the standard costume";
+      verdict.reason = "same as the original file";
     } else {
       std::string detail;
-      verdict.served = host::cosmetics::costume_skeleton_matches(clean, pack, &detail);
+      verdict.served = costume ? host::cosmetics::costume_skeleton_matches(clean, pack, &detail)
+                     : stage ? host::cosmetics::stage_safety::matches(clean, pack, &detail)
+                             : skins::music_is_valid(pack, &detail);
       verdict.reason = host::cosmetics::online_reason_short(detail);
     }
     if (verdict.served) g_pack_skin_served.insert(verdict.entry);
-    host::log("mods: skin %s %s online (%s)", verdict.path.c_str(), verdict.served ? "stays on" : "swapped",
+    host::log("mods: cosmetic %s %s online (%s)", verdict.path.c_str(), verdict.served ? "stays on" : "swapped",
               verdict.reason.c_str());
     notes.push_back({verdict.path, verdict.layer, verdict.reason, verdict.served, verdict.identical});
     g_pack_skins.push_back(std::move(verdict));
@@ -1706,7 +1735,7 @@ void h_pad_read(MuPadStatus out[4]) {
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
   bool offline_gameplay = false;
   if (gx::RenderOptions::live_offline_delay() && !g_replaying &&
-      host::netplay::session_mode() < 0 && g_game.lcancel_view) {
+      slippi::online::session_mode() < 0 && g_game.lcancel_view) {
     MuLcancelView view{};
     g_game.lcancel_view(&view);
     for (const auto& fighter : view.port) offline_gameplay |= fighter.present != 0;
@@ -3019,6 +3048,7 @@ int run(void (*shutdown)(int)) {
     host::die("ISO DOL does not match vanilla Melee NTSC 1.02; the Source engine runs only the retail game (modded discs are not supported)");
   // Diagnostic builds of the game (for example the M0 maths audit) without replacing the shipped DLL.
   if (const char* dll = std::getenv("MELEE_GAME_DLL")) g_dll = dll;
+  g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
   if (!module) host::die("cannot load %s (error %lu)", g_dll.c_str(), GetLastError());
   if ((uintptr_t)module != GAME_IMAGE_BASE) host::die("%s loaded at %p, not at %llX", g_dll.c_str(), (void*)module, (unsigned long long)GAME_IMAGE_BASE);
@@ -3026,8 +3056,8 @@ int run(void (*shutdown)(int)) {
   host::game_image = (uint8_t*)module;
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
-  user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
   user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
+  user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
   if (entry(&api, &g_game) != 0) host::die("%s refused host API version %u", g_dll.c_str(), api.version);

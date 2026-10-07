@@ -6027,14 +6027,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               ImGui::TextWrapped("Online: Unranked, Teams and Party always play the standard game. Direct can use "
                                  "this mod, and then only against a player on the same build.");
             } else {
-              // The mod carries costume files: say which of them stay on online and why the rest do not.
-              ImGui::TextWrapped("Online: Unranked, Teams and Party play the standard game. Skins in this mod that "
-                                 "keep the standard skeleton stay on; the rest show the standard costume. "
+              ImGui::TextWrapped("Online: Unranked, Teams and Party play the standard game. Verified costumes, "
+                                 "stage visuals and music stay on; other changes use the original files. "
                                  "Direct can use the whole mod, and then only against a player on the same build.");
               size_t skins_on = 0;
               for (const auto& skin : mod_status.pack_skins) skins_on += skin.served ? 1 : 0;
               char skins_header[96];
-              std::snprintf(skins_header, sizeof skins_header, "Skins in this mod (%zu on, %zu swapped)###pack_skins",
+              std::snprintf(skins_header, sizeof skins_header, "Cosmetics in this mod (%zu on, %zu swapped)###pack_skins",
                             skins_on, mod_status.pack_skins.size() - skins_on);
               if (ImGui::CollapsingHeader(skins_header)) {
                 for (const auto& skin : mod_status.pack_skins) {
@@ -7273,6 +7272,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       else settings_hint("Adapter polling rate: --");
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Incoming USB reports per second, shared by all four adapter sockets.\nThe game reads controller state once per frame.");
+      const bool resetting = host::gcadapter_reset_pending();
+      ImGui::BeginDisabled(resetting);
+      if (ImGui::Button(resetting ? "Resetting adapter..." : "Reset GameCube adapter"))
+        host::gcadapter_request_reset();
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Reopens the USB connection and recalibrates all four sockets.\nRelease buttons, sticks and triggers first. Use if inputs stick or the polling rate drops.");
       ImGui::Spacing();
     }
 
@@ -7653,7 +7659,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     ImGui::TextWrapped("Imported Gecko codes run offline. They are suspended online and during replay playback.");
-    settings_hint("Restart the game after importing codes so they can run. Use codes for Melee NTSC 1.02; "
+    settings_hint("Restart the game after importing codes or turning on the first one, so they can run. Use codes for Melee NTSC 1.02; "
                   "codes for another revision or conflicting mods may not work.");
     ImGui::Separator();
     ImGui::TextUnformatted("Your codes");
@@ -7679,7 +7685,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::string tip;
           for (const std::string& n : c.notes) tip += n + "\n";
           if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
-          else tip += "Runs offline only. Restart after importing new codes.";
+          else tip += "Runs offline only. Restart after importing new codes or turning on the first one.";
           ImGui::SetTooltip("%s", tip.c_str());
         }
         ImGui::PopID();
