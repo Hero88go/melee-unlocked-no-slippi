@@ -35,6 +35,7 @@
 #include "gx_dxr_path_tracer.h"
 #include "gx_texture.h"
 #include "gx_streamline.h"
+#include <system_error>
 #include "gx_xess.h"
 #include "flicker_scan.h"
 #ifdef GX_DLSS5
@@ -276,6 +277,7 @@ class D3D12Backend : public Backend {
   // changing internal resolution mid-match).
   void drop_efb_copies() { efb_copies_.clear(); texture_sets_.clear(); }
   void resize(int w, int h) override {
+    pause_frame_generation_for_resize();
     wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true);
     // Auto scale follows the window like Dolphin's "Auto (Window Size)" integral mode: the EFB is
     // re-created at the new multiplier and scaled EFB-copy textures are dropped (their size changed).
@@ -289,6 +291,7 @@ class D3D12Backend : public Backend {
   uint32_t texture_count() const { return (uint32_t)textures_.size(); }
 
  private:
+  void pause_frame_generation_for_resize();
   const uint64_t backend_id_ = next_backend_id.fetch_add(1);
 #ifdef GX_PC_SETTINGS
   std::unique_ptr<PcSettingsUI> settings_ui_;
@@ -606,8 +609,13 @@ void D3D12Backend::init() {
     host::loading_show(L"Starting the graphics device", 2, 4);
   }
   ComPtr<IDXGIFactory4> factory;
-  check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
   ComPtr<IDXGIAdapter1> adapter;
+  // Twice at most: when creating the device through Streamline faults, Streamline turns itself off
+  // and a plain factory and device are made instead (the game starts without DLSS).
+  for (int attempt = 0; attempt < 2 && !device_; ++attempt) {
+  if (attempt == 1 && !streamline::device_faulted()) break;
+  factory.Reset();
+  check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
   for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
     DXGI_ADAPTER_DESC1 desc; adapter->GetDesc1(&desc);
     if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
@@ -628,6 +636,8 @@ void D3D12Backend::init() {
       if (!exe_dir_.empty()) xess::init(exe_dir_, device_.Get());
       break;
     }
+    if (streamline::device_faulted()) break;   // start over without Streamline
+  }
   }
   if (!device_) host::die("D3D12: no adapter");
   D3D12_FEATURE_DATA_D3D12_OPTIONS5 dxr_options{};
@@ -936,6 +946,7 @@ void D3D12Backend::apply_fullscreen_mode() {
     if (!want_exclusive) host::window_set_fullscreen(opts_.fullscreen || exclusive_deferred_);
     return;
   }
+  pause_frame_generation_for_resize();
   wait_gpu();
   for (auto& buffer : backbuffers_) buffer.Reset();
   if (was_exclusive) {
@@ -1301,6 +1312,7 @@ void D3D12Backend::configure_dlss() {
       opts_.dlss_mode = 0; return;
     }
   }
+  pause_frame_generation_for_resize();
   wait_gpu();
   forced_scale_ = scale;
   if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
@@ -1331,6 +1343,17 @@ void D3D12Backend::configure_dlss() {
             in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
 }
 
+void D3D12Backend::pause_frame_generation_for_resize() {
+  // DLSS-G retains its resources between matches. It must stop using the old
+  // depth/motion sizes before a window or EFB resize, and receive the new sizes
+  // even when the player's generation multiplier did not change.
+  if (fg_applied_ > 0) {
+    streamline::set_frame_generation(0, (uint32_t)efb_w_, (uint32_t)efb_h_,
+      (uint32_t)client_w_, (uint32_t)client_h_, 3, (uint32_t)DXGI_FORMAT_R8G8B8A8_UNORM,
+      (uint32_t)DXGI_FORMAT_R16G16_FLOAT, (uint32_t)DXGI_FORMAT_R32_FLOAT);
+  }
+  fg_applied_ = -1;
+}
 void D3D12Backend::wait_gpu() {
   ++fence_value_;
   queue_->Signal(fence_.Get(), fence_value_);
@@ -3117,7 +3140,14 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     present_wait_ = Stopwatch::now()-wait_start;
     streamline::pcl_marker(3); streamline::pcl_marker(4);
     Stopwatch present_sw;
-    swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    try {
+      swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    } catch (const std::system_error& error) {
+      streamline::disable_after_resource_error(error.what());
+      opts_.frame_generation_mode = 0;
+      opts_.dlss_mode = 0;
+      fg_applied_ = 0;
+    }
     diag("swapchain Present and pacing");
     g_prof[10] += present_sw.lap();
     streamline::pcl_marker(5);
