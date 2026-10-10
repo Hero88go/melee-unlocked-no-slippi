@@ -163,7 +163,10 @@ uint32_t profiler_frame_id();
 const std::vector<uint32_t>& slow_sim_frames();
 
 // ---- simulation-thread cost accounting (per retrace; logged when a frame exceeds 20 ms) ----
-enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_DECODE, SIM_COST_COUNT };
+enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_DECODE,
+               // Where a frame's time goes besides work: reading the controllers, the frame's own timed waits
+               // (the audio steps), and how far past their deadlines those waits returned.
+               SIM_INPUT, SIM_WAIT, SIM_LATE, SIM_COST_COUNT };
 void sim_cost_add(int slot, double seconds);
 double last_sim_frame_ms();            // work time of the most recent simulation frame (sleep excluded)
 
@@ -184,6 +187,7 @@ void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighter
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
 void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language
 void install_low_poly_fighters();  // Static Recomp: the fighter parts hook behind "Low poly fighters" (gx::low_poly_fighters_active)
+void apply_player_tags_always();   // Static Recomp, once per game frame: keeps the P1 / P2 markers up while the option is on
 void apply_low_poly_fighters();    // Static Recomp, once per game frame: runs the fighter draw from RAM while the option is on
 uint64_t console_epoch_ticks(); // the console clock at start: ticks since 2000-01-01, local time
 void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
@@ -194,6 +198,9 @@ double emulation_speed();
 // paced, wall time when --fast). Sub-frame presentation measures its phase from this.
 double frame_time();
 double now_seconds();
+// Seconds a short timed sleep wakes late by on this system, as last measured (0 on a healthy one).
+// A wait that must end on time sleeps only when it has that much room, and spins otherwise.
+double sleep_slack();
 bool latency_trace_enabled();
 TickTiming& tick_timing();
 // Per-draw scopes run tens of thousands of times a frame, so they read the CPU time stamp counter
