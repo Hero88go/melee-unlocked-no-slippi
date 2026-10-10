@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
+#include "gx_adapter.h"
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <intrin.h>
@@ -249,6 +250,7 @@ class D3D11Backend : public Backend {
 #endif
       set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
       set_low_poly_fighters(opts_.low_poly_fighters != 0);
+      set_player_tags_always(opts_.player_tags_always != 0);
     } catch (...) { stop_shader_workers(); throw; }   // the worker threads must not outlive a failed start
     starting_ = false;
   }
@@ -501,7 +503,7 @@ void D3D11Backend::init() {
   ComPtr<IDXGIFactory2> factory;
   require(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "dxgi factory");
   ComPtr<IDXGIAdapter1> adapter, chosen;
-  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+  for (UINT i = 0; enum_adapter_fastest_first(factory.Get(), i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i) {
     DXGI_ADAPTER_DESC1 desc; adapter->GetDesc1(&desc);
     if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
     chosen = adapter;
