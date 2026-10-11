@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-f618fd6fec82877aa522bc032026c55558051b5d48a559415a7a96be9edaa246         8  VERSION
+468a250011a989b42534b8d8a25b7ccdbecc082457224f6d33d4481d1902fdf6         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -24,7 +24,7 @@ c06fcb7c960e01f59518e4456d90c174ed2ff50c9e204977f83867daf8681945      2452  nati
 9c5e8af52fc6390be394a51140e462a160ef371e5498a13ab3c771dfba7b939a     12244  native/Geometry.h
 ff02a43301fdece51e96a9bbdb5efe23ba824116721e66eec943194a117fc200       446  native/PackedAnimation.h
 243328190b7aabf7a16b9ea8bdec248d7b76b947599ddbda2b36698d48dc278c      3911  native/Texture.h
-e82a21d26d08047de75c0074848d24e4dff1ce72f20bcca465295e7ecc36a7b6     80386  port/CMakeLists.txt
+5e12d171ca7a310c27ff643206c955c918ce5de77f39c62d1622221b1f92e7fa     80402  port/CMakeLists.txt
 435b2784e91dff97a7566c8b3dc9b8ec75c934e71841da07f2618580bf285419    342278  port/app/bailey_cut.bmp
 3447489eaebee213ef85fe194394b9a2d3ba4fd963963deecfa542f1a6b3b8e9     18652  port/app/emoji_1f389.ico
 a82807ea641785fd359d00b7ed26ec5a1f2d36dae4a26d2406863a8db4131c91     11411  port/app/emoji_1f3ae.ico
@@ -39,7 +39,7 @@ d548fb17770a44cb0905c339c7b0ea5ddf5cdf87e4ba5f1202514b7a296e21ba    110701  port
 d938ee0b5549591b7c614d02efd6c195c14eba234d63e9d0f6fb110077984a3d    206060  port/app/launcher.ico
 61ea51bc5af0e6cf4229a851cb6691a5211e5f86f2d46a19fa9fb3794e947c6a      3297  port/app/launcher.rc
 5192cd66b60b2d1f29f9fb31c0465a03e44a0bead758cbcf460b07fa7116dc2f    773814  port/app/launcher_bg.bmp
-6c09109c2dfd4dbb85b8d80a24de48bb80e5b9dfba64fc00eeadf429201e851c     14782  port/app/launcher_crash.inl
+ead4d1ade9f4875fb2d757a7ac8fcdf4e43473a44a4ef1ddd2189bbe14ef555d     17378  port/app/launcher_crash.inl
 21cf7dd6fe2a0c5d5c3914c4cfb981f929d1d3c16eaa68413594160612a2c37e     15433  port/app/launcher_crash_privacy.h
 4d4d482fe713f5a0fa87371ee0f6a2518a3de9ea3fc118d791121a4403019241      4648  port/app/launcher_crash_text.h
 ca2e5a1766b0d6cde7a51ca334d34c638e09c4570239fb3e3ad00e7d314efb99     11438  port/app/launcher_crash_zip.h
@@ -48,7 +48,7 @@ e4c84156f40800303523fb360fad9e8c74d268e8cc20549393061507dcf460f7     12727  port
 5204274e78a614462ab568c968b18e964948b83f3a38c9c35cd3a5806b0738b4     14749  port/app/launcher_lang_en.inl
 a910a9d106c3235cea3a5dc2b8d87ab5c7daf53412e3c78bda6a8e6b630e5f49    126620  port/app/launcher_lobby.cpp
 f702de17258261efaec421b8aae668395c14ab65936d554c7a57a17f2fd62eb9      4006  port/app/launcher_lobby.h
-6501fa313a0dd14adcb0ff82fc49d96c46fb73e7ff53742dece6c6e41e0b3df6    144291  port/app/launcher_lobby_p2p.cpp
+ec4fa67313e6a14f65ed7b3853ce353c90bcf5aa568174e049bc3be61e7567f0    145353  port/app/launcher_lobby_p2p.cpp
 206ae10ebc92b439ddf344f58908c8714eea36ad8da6207dd8eae8e27e7b119c     10831  port/app/launcher_lobby_p2p.h
 5edd39e11a50e4ebb10b4b75a0308828914316325c357f5be4d05e18b4e82a8c     34767  port/app/launcher_lobby_ui.inl
 d269e4ec344128abe75ddd23a62939814be7bf9acd7568f64380594ef31ee126      4008  port/app/launcher_match_character.inl
@@ -135,10 +135,10 @@ fdb8b053fc29c22b70abe3421062b936e4a49d082c1b2df6831af38786a66b70      1529  port
 58520a88b843bd33825d4f1abaae6eb51cdd08d04ee3f606dd82fdf27288e4f8     19087  port/runtime/gx/gx_core.h
 95f5d4d2e009c9853ed89714f664376c324b411a08943863c18d6ff327a59b69    122964  port/runtime/gx/gx_d3d11.cpp
 d100f66929bfe0796f100bce8c41d0650fe9ed8f0debeb08c3edb658ea87e15f       806  port/runtime/gx/gx_d3d11.h
-9bec1112b48f167db1fd951f21f0ef9283815574277d2075c2c2022c1846dfab    223095  port/runtime/gx/gx_d3d12.cpp
+2374d0e245f1854e470ccdb91ec048a22db681e3ce73f2133e3358d47e077eee    226115  port/runtime/gx/gx_d3d12.cpp
 8b8f53e7f73eef496bbe022d55fa9dfc5ceea5cb280d769835183ccac379d268      1227  port/runtime/gx/gx_d3d12.h
-e76c4e573e2cabdb2460da81896ec1621cda806eb2fb584a64067a4a650bc427     33921  port/runtime/gx/gx_dlss5.cpp
-896db251f80749288ab8d549b8796d00536b3bf8f76bc036c9f4047b3d86a9f3      5692  port/runtime/gx/gx_dlss5.h
+9592f68e187808a055ac8d76abd6f30649207aa19a445f6dd66afdaba23e7a1f     34033  port/runtime/gx/gx_dlss5.cpp
+a34e6c412f40e28cb0be2ea9c0640abf980d80a59c29d118232e291279a0663d      5862  port/runtime/gx/gx_dlss5.h
 0fd0a63171590a13034bfedd98f99a8183751c0b66b31fc485fc309c6e1e7c0f      7119  port/runtime/gx/gx_dlss5_scaling.cpp
 977f23a9e26362f81e74b2e280032ca71e1ead41376200f1c6bc7943c3491373      1282  port/runtime/gx/gx_dlss5_scaling.h
 59ad6b029318148ac7e8d238d6a92572cc705af31dd1e4a57507c891774cee79      9382  port/runtime/gx/gx_dxr_gpu_scene.cpp
@@ -164,7 +164,7 @@ cf465e78bc884d3b53a686baf70c3c18691078bcdd301af8f6ff40e9d54a2cd6      2382  port
 c7b60df1b3784564cfd931d261ade1e35fc9493333fc24442643b028931560f7       862  port/runtime/gx/native_pose_bridge.h
 ef74f7373b103b20df50390797b7f78d2d3bfcb2171503cd90dd64e650a8432a     10608  port/runtime/gx/net_overlay.cpp
 6e2875e57deeb0a74663444da82e54e17bce037fa8836c3cbb9bf674422d72e4      1466  port/runtime/gx/net_overlay.h
-61a3da56a4acbaf48d66b30f8ed3f0999af462913a0f67d2cb08012a3b9746d6    518655  port/runtime/gx/pc_settings.cpp
+7056b49432b6315b4b57352db025ad5ec66b77e5b04831277f6552a3b9af0df0    520020  port/runtime/gx/pc_settings.cpp
 019ab2fa356084b0cf1d6792aa4001abb4c41888055a452160ce315b88081ea2      2957  port/runtime/gx/pc_settings.h
 725b38c56ddf086939c26bf430e778c37382995d899ff6e01768c9530882cf00     13962  port/runtime/gx/pc_settings_dx11.cpp
 79036b5bebce3bf688c8a99b993570ec7c17d075603be850d16a3747822c97f9      5089  port/runtime/gx/pc_settings_shared.h
@@ -175,8 +175,8 @@ dc22e3dcce85f8057b56f2a8b9d81f28d65a0143d6442cb7de05a1a4a3b7c083      1715  port
 b0a317d60fdb3ce0efb8679938450d68f83cd43b2ee7364f67a80f50c15561af      8427  port/runtime/gx/replay_bar.cpp
 cef2b7ba03e52e558546741479ea2f004a5df0ae93bdb88c3d03b53390cdbcb9      1365  port/runtime/gx/replay_bar.h
 0384cba6160b978d55d715201ce21834b585763c1fb89ccbb8fbeb33af6e378e      6591  port/runtime/gx/shaders/dxr_pathtrace.hlsl
-32a64ae1d367c49b3e6ab3791b1337db69f212008bc13bfbceee22149ec9d25f     70399  port/runtime/gx/subframe.cpp
-f5b5655baa53776d8dc028c3ebb783545c4a78defdaf706fa7695bf3c2705dea      8369  port/runtime/gx/subframe.h
+45281cce2b35cb288492d3813d188b65649cdd9ce2bf0d6c83ad9ed933b51887     73057  port/runtime/gx/subframe.cpp
+496b50806def78e7d421b7b99cc9e9cfc0465efd3d87d22e303fd2fb382794c3      8522  port/runtime/gx/subframe.h
 8a2a7f52830c30d17bde5059f178c5ead9e198bb083c56e3fa0484d81320b920     43269  port/runtime/gx/texture_pack.cpp
 985d4855e81258da67ffcc07afaf775bb1476fcb7e7cf4582d44988e0148e964      5762  port/runtime/gx/texture_pack.h
 de6c41eeaec40d6a249226c9dfb9f35c2dee85a9295c3dfd1158449ab89c49e9      5397  port/runtime/gx/texture_snapshot.h
@@ -288,7 +288,7 @@ e6cdf166e069a25e16ff8110c9b883233e4720fd7de31348ea22361986cb861b     16824  port
 e04bde03941e69b8755596efa647e7ae4aca0232bf8bcbcef4f5ada8b502bdd5      3932  port/runtime/host/hid_pad.h
 3cf412367a84b695be8493d073dde1771364ff4714b925a394dfa81c5f00aa49    152540  port/runtime/host/host.cpp
 50da7e22b4c07b2de373a8e12667fdc85486dd1bd305049176c2da59862bc263     18435  port/runtime/host/host.h
-68b4654c767dfa45ce8c77ec4249c08db0396221043afb1a01c655e90a160e67     34272  port/runtime/host/input_bindings.h
+e64273731ff66934ad3fce677a4b648b2ec27a2fef807a4a87e3164de13d25ee     35022  port/runtime/host/input_bindings.h
 a695cadefd3dff634dc2a5fdd2df33debd503a51bce1846d7ee25278ce7d4849     21163  port/runtime/host/lcancel.cpp
 f47b11b97e1115b5587ffe2186be0967c57a6d0a368cc92459506f6a0fe5f678      2435  port/runtime/host/lcancel.h
 8c4bfea1f46cca80395dbd49f8d3cc9688b320ec858b130859bb4d8c9aaf0c50       248  port/runtime/host/memory_range.h
@@ -323,7 +323,7 @@ d2cd13f1a4209ba6997e5f03d3f601616d767a5cd807b69bbb4872b12eff44d2      1394  port
 cf012c4ae8fe1316bdab225c6cc51b0316eb2dfbeadfc5f44465b3891751dee4     14687  port/runtime/host/stage_dat_safety.h
 7da4454b0c101fbb8ee6f7523965129728ccc0ac755640fc4407409f962cf53e      7088  port/runtime/host/static_gecko.cpp
 d0902cf2a214a9cf9ccb4b5b2064a8c7ac7fc1a2d459584524aa6561d7be090b       200  port/runtime/host/static_gecko.h
-6a793458594721db3c6d5de5e5f66b617938ca74a7f8ee3ea14673c7362014be     31332  port/runtime/host/switch_pro.cpp
+96c7f82d6cd84052f9dc3708c5c05df08f8c25ed1fb4f7e01e7e33d97f687556     33933  port/runtime/host/switch_pro.cpp
 2c2b8a890f57c1bb9affef779c8a99bd0968b8e2d2fa260103fb8a212996c183       512  port/runtime/host/tick_timing.h
 35602627f4b56ebffd0c93eb9a320b08fe3aeb72327d3cd621757b42db03a5d7     30391  port/runtime/host/updater.cpp
 43055d61e46950f068e89baaa6e9a56519f18e913dcbf9dde9020c62f93917fb      2723  port/runtime/host/updater.h
@@ -332,7 +332,7 @@ e58256ed2ce725dfd94c289290e21b37993c7e1ab5183e7e49d0ba2f8242c2a5      9144  port
 3a1d172d18aadf012500854a5f0a480ae3cfdd1eac91f320d1f8e98edcb0854d   1270052  port/runtime/host/user_gecko_targets.h
 01c35b48a52c7549f16ce465a74ad1b3d36fbb77bd90a399e6799d995931d19f      6401  port/runtime/host/vcdiff.cpp
 2ce067cd9371e75a36fe88827cc5f982d22a005b4c27c7946ef9e7dccc83b1ea       595  port/runtime/host/vcdiff.h
-fcf6a6f128529354ca9b321e0f2be5f7075f2b78a2fcb2eb1a7591a9558a2af6     71902  port/runtime/host/window.cpp
+7daa717453e1caae07d3c27c7a3976f258617458835ea6ccf9cf293bdfd2e2f6     72017  port/runtime/host/window.cpp
 8d7d9ffa03aef8b2c2f5eda1fd244c19a56b250c99b41870fa02984c444a6c2e      3607  port/runtime/host/window.h
 f5b76a826352e5a048670952cefb99893f31fcff1b5b5f3aacc44147ce94879b     11064  port/runtime/mu_net/input_transport.cpp
 634af26f6de25ef87617764ea5121093c7d53e02454e138957d3374eff145279      8233  port/runtime/mu_net/input_transport.h
@@ -370,7 +370,7 @@ b9fd91e4c65aab884d1df3d23aa4525724609d4e3f343de0a013b2b7334a5f7b      2278  port
 302f311b516f2d9d1d39c49db0f8e3449aaea45e962508720390afc8e325f9f2    156131  port/tests/cosmetic_mods_test.cpp
 24f389a77cbba6ee5c6ba2fa499a1ba8a1365dada53732d48375832fc0179b3d      1301  port/tests/disc_archive_test.cpp
 8fa6ca08f022aa2ee10401112ff221fea54c2f0c65cd6d27c0799ffe8008a1ad      1521  port/tests/disc_fst_paths_test.cpp
-cb310d52cc5818817b405ba83604f4b8979c438bfb7f500a84d8bf9d2937b956     89193  port/tests/launcher_lobby_p2p_test.cpp
+b3ccdc462040e25b12a6917a4261258f34db20ec639ca7fa46f2847976215b22     91232  port/tests/launcher_lobby_p2p_test.cpp
 624edfc1dffa273f187b3854966b20d5333b8ffe26c33ba537bb551ad05af0a7     83289  port/tests/mu_net_test.cpp
 d62704729c41cf6181f01bbf2c34059151e5395e092b276e2a5670c8505917ea      1707  port/tests/offline_input_delay_test.cpp
 82af7bd49322f14a6c406d957a253356de07825c734402f911e0a7914cdac2a9      2943  port/tests/stage_dat_safety_test.cpp
@@ -1386,7 +1386,7 @@ bdc01e48ce9847b3d061a68f65cee6ded078b8a9e24af3914a98e0d37a20e1b1     13687  sour
 1293199a290e99e86e66034c3fea03bc046cf33d1e2ace68c86b2f9973fb4c5b     22278  sourceport/game/tmce/src/lab_common.h
 2fb07c91260ba6c58b2f3e0be3366f4ade35834ac7d95a1aac469ca4547a0268     44641  sourceport/game/tmce/src/lab_css.c
 bfc457feb957f147b91a95fcc8da79e13872db96b25e84f2bd68f56c8bace860      4891  sourceport/game/tmce/src/laserland.c
-52d1e137b50106195a1cbe7702c7f13d40b0667111703ccd152dfebc68a53563     28834  sourceport/game/tmce/src/lcancel.c
+df492822abb5cd9fa68e0b4d5f83aaa1a9dd9315783c1fc8e71e5cdbdd6d8e7c     29059  sourceport/game/tmce/src/lcancel.c
 7e8eefc0247926d99418b932255256d76f68a63feddee548714d4e22167fdd72      2449  sourceport/game/tmce/src/lcancel.h
 492c6cd18d942edee78f98b049434d5dba5dd0787f032d6b3e5a61ed308f652d     45034  sourceport/game/tmce/src/ledgedash.c
 9413db2b102134674a82cb125f59dec86c320acd0c648b96489af25247d24c84      2777  sourceport/game/tmce/src/ledgedash.h
