@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-ae80f4d766b199ac7e6a469d55327718a8d84604fd9c14f81ce9772371a5eb11         8  VERSION
+f420387d8ad331b0c03edfc195939d8dab32961715eb96249e1c0362b15a75c3         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -35,7 +35,7 @@ cd5f4481312bee98029dd8cac588656d0535acae5da20ca053cfc719c77f3ad7     10752  port
 b712fbd9c6146933ea65364d5756d2371e0736145808d1bb514fedbecf4a4f76      6856  port/app/emoji_2764.ico
 e65f937939ae5230082ac9271f5dd7b26a2caea200b52d0f4c83164f92984aa9     15254  port/app/emoji_wave.ico
 819c7c1e0a40edf09d3d64ad95b4568be286c8d4e8d0636cf757e92d954a6ead       642  port/app/launch_process.h
-784c3aa7b268f5d879f2f3c13421d726098d102b647aa3cdcf4150e5c7fd8975    109398  port/app/launcher.cpp
+d548fb17770a44cb0905c339c7b0ea5ddf5cdf87e4ba5f1202514b7a296e21ba    110701  port/app/launcher.cpp
 d938ee0b5549591b7c614d02efd6c195c14eba234d63e9d0f6fb110077984a3d    206060  port/app/launcher.ico
 61ea51bc5af0e6cf4229a851cb6691a5211e5f86f2d46a19fa9fb3794e947c6a      3297  port/app/launcher.rc
 5192cd66b60b2d1f29f9fb31c0465a03e44a0bead758cbcf460b07fa7116dc2f    773814  port/app/launcher_bg.bmp
@@ -240,7 +240,7 @@ b389aa07c0e70e10b5a4135b3183e43aa5e960abc4e35200475c34e71e9b4271   2485649  port
 6d43bac25b88247567537314cd91e6770bcca84e710a87debb3921bc24175355   2287707  port/runtime/gx/ui_sources/mockups/assets/overlay-concepts-v2.png
 49a5d8e047d26ef4a74228082197e5cc5f45423f6fc57b64046f81e4c317ec8a     14702  port/runtime/gx/ui_sources/vendor/assets/asio-compatible-logo-white.png
 29fca7ca689ad2699fe385d3273b2b50425f88e8bd81797303c52254d7e09f03       722  port/runtime/gx/ui_sources/yampp/ORIGIN.md
-f62beacf62fd1a1f240f52a4b9fed1c19e941dd01f0023dbd82abc207522de5d     16580  port/runtime/gx/user_shader.cpp
+d026c1a1adefcbd697e6d2e900984434e1acacf774bd701c84916f71bc212d1e     20133  port/runtime/gx/user_shader.cpp
 fbe416778cbd3d520fbd115e187593697538823e0506d3ff678ac834a5515820      2144  port/runtime/gx/user_shader.h
 e5197409b3195dccab17d662f61f831486c375393c2886fd06555be4ba3e3c28     31346  port/runtime/gx/video_background.cpp
 2bf953c109e30a543d1f25f107176938f96680fd918a86026359c31ee7c8d408      2957  port/runtime/gx/video_background.h
@@ -325,8 +325,8 @@ cf012c4ae8fe1316bdab225c6cc51b0316eb2dfbeadfc5f44465b3891751dee4     14687  port
 d0902cf2a214a9cf9ccb4b5b2064a8c7ac7fc1a2d459584524aa6561d7be090b       200  port/runtime/host/static_gecko.h
 434d0829e0ad33f37823a5197c0531f4169bfcf49506975fa1ba92632f0d420f     21696  port/runtime/host/switch_pro.cpp
 2c2b8a890f57c1bb9affef779c8a99bd0968b8e2d2fa260103fb8a212996c183       512  port/runtime/host/tick_timing.h
-4120a32297bfd9911b875a18a4fa184aab58054cdaf46b3a44caf3c30e7695d1     28846  port/runtime/host/updater.cpp
-bece2fcb411f6136a36d4dacf0e8038ac20535791755eb29a96920c3f23380c5      2231  port/runtime/host/updater.h
+35602627f4b56ebffd0c93eb9a320b08fe3aeb72327d3cd621757b42db03a5d7     30391  port/runtime/host/updater.cpp
+43055d61e46950f068e89baaa6e9a56519f18e913dcbf9dde9020c62f93917fb      2723  port/runtime/host/updater.h
 642dc2882f4558182118c6db79bb14af6a3b1237ebc274a2bf286cceebceb223     40652  port/runtime/host/user_gecko.cpp
 e58256ed2ce725dfd94c289290e21b37993c7e1ab5183e7e49d0ba2f8242c2a5      9144  port/runtime/host/user_gecko.h
 3a1d172d18aadf012500854a5f0a480ae3cfdd1eac91f320d1f8e98edcb0854d   1270052  port/runtime/host/user_gecko_targets.h
@@ -551,7 +551,7 @@ bdece3b1c55790527fe054fd7230aee0dcfa76cb564ffa6f3129eec0dac9af2a     17029  port
 91594377d2044c7212e88aeeab7fb5a03078f4face45e50a5b0635b52d8f89b7    105570  port/third_party/monocypher/monocypher.c
 7911a870e0b26d301ec552015b89abc70091ae81e8830385791e936a8f828c65     12498  port/third_party/monocypher/monocypher.h
 81fce7f0348de953f625c5ee307204405fcb7829d669db8b653ed4894c5f950c    726589  port/third_party/nlohmann/json.hpp
-c1326de01d9d8de2f7e68a98f5b29ed5d5239654bd13e5dd6d69d2de891f00aa       616  port/third_party/slang-shaders/README.md
+366e3f3ffe10ce330f5dcc3658f3ec19aa8187a5ad090cbb65af28310c537bc8       698  port/third_party/slang-shaders/README.md
 67f6b5f323d3c3813fe937a7f553bdcd6bc81aafbae067dc026ea41e092ff221      9999  port/third_party/slang-shaders/anti-aliasing/shaders/fxaa.slang
 2ae7cded13d2a91cc96d83dc3e25f3ac4c29bbf407d7d45d5f18943cc3f24288      4159  port/third_party/slang-shaders/blurs/shaders/dual_filter/bloom_blend.slang
 009bb725976fc79675f15c25799140551bcd74e894528aaa6cdf70cf1d6b2fec      2682  port/third_party/slang-shaders/blurs/shaders/dual_filter/bloom_blend_fast.slang
