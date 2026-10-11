@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-f420387d8ad331b0c03edfc195939d8dab32961715eb96249e1c0362b15a75c3         8  VERSION
+f618fd6fec82877aa522bc032026c55558051b5d48a559415a7a96be9edaa246         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -284,7 +284,7 @@ e1f957a335b5c549e687d89a98eb07b4d927a48b9bf0aed5d0e69d3792d2e23c     25940  port
 8314917bb88a55f786ad9bde34f290b772c096cf0a451e845dc8ad1b8d593e10      2545  port/runtime/host/guest_heap_trace.h
 2a0e065980fd7a67ce2cb3eef7b7e3625c3edd539159b036949fa595e00775ff      8626  port/runtime/host/hackpack_ai.h
 116da8f5800319f8532331e934733402afd9e39250ad28344dd20ff5e3eb4ae1     11679  port/runtime/host/hackpack_source.h
-f8e09bfff78787b825f7e84fb1ec18f41d601d4b2311170ff1ed803a49760fd7     16886  port/runtime/host/hid_pad.cpp
+e6cdf166e069a25e16ff8110c9b883233e4720fd7de31348ea22361986cb861b     16824  port/runtime/host/hid_pad.cpp
 e04bde03941e69b8755596efa647e7ae4aca0232bf8bcbcef4f5ada8b502bdd5      3932  port/runtime/host/hid_pad.h
 3cf412367a84b695be8493d073dde1771364ff4714b925a394dfa81c5f00aa49    152540  port/runtime/host/host.cpp
 50da7e22b4c07b2de373a8e12667fdc85486dd1bd305049176c2da59862bc263     18435  port/runtime/host/host.h
@@ -323,7 +323,7 @@ d2cd13f1a4209ba6997e5f03d3f601616d767a5cd807b69bbb4872b12eff44d2      1394  port
 cf012c4ae8fe1316bdab225c6cc51b0316eb2dfbeadfc5f44465b3891751dee4     14687  port/runtime/host/stage_dat_safety.h
 7da4454b0c101fbb8ee6f7523965129728ccc0ac755640fc4407409f962cf53e      7088  port/runtime/host/static_gecko.cpp
 d0902cf2a214a9cf9ccb4b5b2064a8c7ac7fc1a2d459584524aa6561d7be090b       200  port/runtime/host/static_gecko.h
-434d0829e0ad33f37823a5197c0531f4169bfcf49506975fa1ba92632f0d420f     21696  port/runtime/host/switch_pro.cpp
+6a793458594721db3c6d5de5e5f66b617938ca74a7f8ee3ea14673c7362014be     31332  port/runtime/host/switch_pro.cpp
 2c2b8a890f57c1bb9affef779c8a99bd0968b8e2d2fa260103fb8a212996c183       512  port/runtime/host/tick_timing.h
 35602627f4b56ebffd0c93eb9a320b08fe3aeb72327d3cd621757b42db03a5d7     30391  port/runtime/host/updater.cpp
 43055d61e46950f068e89baaa6e9a56519f18e913dcbf9dde9020c62f93917fb      2723  port/runtime/host/updater.h
@@ -332,7 +332,7 @@ e58256ed2ce725dfd94c289290e21b37993c7e1ab5183e7e49d0ba2f8242c2a5      9144  port
 3a1d172d18aadf012500854a5f0a480ae3cfdd1eac91f320d1f8e98edcb0854d   1270052  port/runtime/host/user_gecko_targets.h
 01c35b48a52c7549f16ce465a74ad1b3d36fbb77bd90a399e6799d995931d19f      6401  port/runtime/host/vcdiff.cpp
 2ce067cd9371e75a36fe88827cc5f982d22a005b4c27c7946ef9e7dccc83b1ea       595  port/runtime/host/vcdiff.h
-c51cbb992eef731c1e3e1b518eaf29311df20944f244ce7d46e9ea286048e27a     71717  port/runtime/host/window.cpp
+fcf6a6f128529354ca9b321e0f2be5f7075f2b78a2fcb2eb1a7591a9558a2af6     71902  port/runtime/host/window.cpp
 8d7d9ffa03aef8b2c2f5eda1fd244c19a56b250c99b41870fa02984c444a6c2e      3607  port/runtime/host/window.h
 f5b76a826352e5a048670952cefb99893f31fcff1b5b5f3aacc44147ce94879b     11064  port/runtime/mu_net/input_transport.cpp
 634af26f6de25ef87617764ea5121093c7d53e02454e138957d3374eff145279      8233  port/runtime/mu_net/input_transport.h
@@ -1404,7 +1404,7 @@ ff826ee828e9e45ddf5cd0ad120d51dc20c49f5889522f90b352ede7db647f5e     43784  sour
 67457facbe04ebca78e4dc092788f0d4c83880b0f86410b33b2d41cf79c737db     24376  sourceport/game/tmce/src/wavedash.c
 0f2697b62ff6d97fd568808cb06c0eacfbacceb683f8bd50f4c49ea6e92d1e95      2612  sourceport/game/tmce/src/wavedash.h
 5e6709413479af30a99ba26e81f06c2dc0a42fc66b83de29b17f1ca17ecb9b51   7524609  sourceport/patches/melee-native.patch
-43fc69e943d1d56b9e1506e7f41d11c022b0481b3397027904e100e95a400be3      1039  sourceport/tools/cc1.sh
+b504a221820abcee78d16a7339df74e54ddbc7ff0dafcfe41b64dc78111144d4      1027  sourceport/tools/cc1.sh
 90d6eeef317f5a1c3566cd0c740e5f9bba6eb9a2a1ef3987cdac573e79d17f70      6728  tools/disc_offset_audit.py
 e0d67570ac5212ea24dfb921da1491655a58381b3b135bfe974e73720bbbcd1a      2564  tools/fma_exact/extract_funcs.py
 99bdadc2f6c7fa25c2d1068bc1d5f8ffb2d97f8b039e5adfcf56b09bbe7e0c13     58900  tools/gecko_targets.py
