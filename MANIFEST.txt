@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-4a78561d7efbc690b30fb105ff3492fb39fabdfeda896cff342db45725354309         8  VERSION
+ae80f4d766b199ac7e6a469d55327718a8d84604fd9c14f81ce9772371a5eb11         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -59,7 +59,7 @@ c1893a5e6ec18598b72a81e0f670372c70cecf9aa1a373e55ecfc8f5c8c8ffe0     61251  port
 b84614572d35836ad4b2e0b34deb007d4a74f6bc377feea88825b0fe7a517a57      2732  port/app/launcher_replay_data.h
 396d3e577d63e0d31e93d0ad40a8c2c69ca0eaa1bf7caf26e1859d26b8f3ed02      1797  port/app/launcher_replay_lag.inl
 3a3f1379a24ebcb8c68d05ad4febbc760b2c53b3e935f51ccb8bc276240fcd44     12363  port/app/launcher_replay_stats.inl
-1b5dd2bafe4a321470a76530dd7c066703bd07e49e6ee314f64490bb10a694d9     67379  port/app/launcher_replays.inl
+5e1abb995aa44168a8da4d371110156ef4023797f2645db6b9c8ce588865048c     67560  port/app/launcher_replays.inl
 ad276e23c1b5f391f9279fe9307850e696b74067b0f0bcdff10d6a856291ae74      2043  port/app/launcher_theme.h
 505c1f43720cdae14940b87eaef52fcc136c8b153c47cb41c6242cd5d886b121      7770  port/app/launcher_theme_picker.inl
 8864bc63021abae87806522bf80c8de3159e4d34f75e439b0982aab0f091eedd      3298  port/app/launcher_trace_view.cpp
@@ -131,7 +131,7 @@ c1473df6bfea340c5424c3eaaaef90fd9575eed4dfbecbcc1e41a72f3bdac6ee      4057  port
 213e3c840f94abad5a5059349e6365f52c6e01ae2a210a409601777eed81312f      2573  port/runtime/gx/gx_backend.cpp
 fdb8b053fc29c22b70abe3421062b936e4a49d082c1b2df6831af38786a66b70      1529  port/runtime/gx/gx_backend.h
 232ba637142015d560c624ffd7feabfb66e94ff1bfa8faf5e716aaf347ff82e1       911  port/runtime/gx/gx_backend_dispatch.cpp
-8fdc5dc827ddf2ab520f520f36e1561c5198176c73a1dbd1b42c459334e98da9     46444  port/runtime/gx/gx_core.cpp
+979239dad198a7bb93f2c72fd7649e27f67c347ed491e8159bffadd703cfb114     46471  port/runtime/gx/gx_core.cpp
 58520a88b843bd33825d4f1abaae6eb51cdd08d04ee3f606dd82fdf27288e4f8     19087  port/runtime/gx/gx_core.h
 95f5d4d2e009c9853ed89714f664376c324b411a08943863c18d6ff327a59b69    122964  port/runtime/gx/gx_d3d11.cpp
 d100f66929bfe0796f100bce8c41d0650fe9ed8f0debeb08c3edb658ea87e15f       806  port/runtime/gx/gx_d3d11.h
@@ -254,7 +254,7 @@ c9fc42516ccb6347127bbde816268db2ef2753c64b1ed514c89ce01d42b20434      2624  port
 9812d0c8c1996a169027f4ef64be63517968250081419cb15d08acc01973c00c      1569  port/runtime/hle/hle.h
 1c3d1f800a50d74359eb92e5c17409b065afd930bab2959f9c0305c1db467c37     19435  port/runtime/hle/hle_card.cpp
 f333d39d6dc61ea297ecf6d0ccef69f89d48199395b5982b629343f0af622c05      9767  port/runtime/hle/hle_dvd.cpp
-c5e85f6b266d18d1ccbe2ccdb0a9ca943efc8494d045e4304a86931d4c7b7b38      2113  port/runtime/hle/hle_os.cpp
+b44c815ae49a5a901350d8d9f14759ad8a4aebba1ad7374551340cd45fda273f      2184  port/runtime/hle/hle_os.cpp
 aefe746d47a352d38274aa8d240fbad5920670d324fb2ae17ee43b1669a7ce79     22296  port/runtime/hle/hle_pad.cpp
 077b547f08ddbaf96fef4426b1ac240d49429c35185c5ee41f2af08ad0a9cef2     18780  port/runtime/hle/hle_stubs.cpp
 18f20c2501014d47c1e6340f274a2918df9db9ca35c82a4a8c46fa42817d488d      2919  port/runtime/hle/native_online_policy.h
@@ -286,8 +286,8 @@ e1f957a335b5c549e687d89a98eb07b4d927a48b9bf0aed5d0e69d3792d2e23c     25940  port
 116da8f5800319f8532331e934733402afd9e39250ad28344dd20ff5e3eb4ae1     11679  port/runtime/host/hackpack_source.h
 f8e09bfff78787b825f7e84fb1ec18f41d601d4b2311170ff1ed803a49760fd7     16886  port/runtime/host/hid_pad.cpp
 e04bde03941e69b8755596efa647e7ae4aca0232bf8bcbcef4f5ada8b502bdd5      3932  port/runtime/host/hid_pad.h
-228bf591b8cd27ef18b6d14b9f29bf05073821bfa2f9e9fc7a7e9010851f14ff    149054  port/runtime/host/host.cpp
-c5a7b18cc4b2d4526591a8a1251c470eff9481fa9d0e5044edfc7c058eb9f5f4     18203  port/runtime/host/host.h
+3cf412367a84b695be8493d073dde1771364ff4714b925a394dfa81c5f00aa49    152540  port/runtime/host/host.cpp
+50da7e22b4c07b2de373a8e12667fdc85486dd1bd305049176c2da59862bc263     18435  port/runtime/host/host.h
 68b4654c767dfa45ce8c77ec4249c08db0396221043afb1a01c655e90a160e67     34272  port/runtime/host/input_bindings.h
 a695cadefd3dff634dc2a5fdd2df33debd503a51bce1846d7ee25278ce7d4849     21163  port/runtime/host/lcancel.cpp
 f47b11b97e1115b5587ffe2186be0967c57a6d0a368cc92459506f6a0fe5f678      2435  port/runtime/host/lcancel.h
