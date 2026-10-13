@@ -107072,7 +107072,7 @@ index edf865c17..df647f993 100644
  /* 16CF4C */ void fn_8016CF4C(int, MatchOutcome);
  /* 16CFE0 */ void fn_8016CFE0(void);
 diff --git a/src/melee/gm/gmvsmelee.c b/src/melee/gm/gmvsmelee.c
-index 61bebcfb0..e8283d103 100644
+index 61bebcfb0..8a1513b8e 100644
 --- a/src/melee/gm/gmvsmelee.c
 +++ b/src/melee/gm/gmvsmelee.c
 @@ -18,6 +18,13 @@
@@ -107167,10 +107167,14 @@ index 61bebcfb0..e8283d103 100644
      gm_SetupSubColors(start);
      gm_LoadRumbleEnabled(start);
      gm_LoadAnnouncer();
-@@ -211,6 +271,39 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
+@@ -210,6 +270,42 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
+ {
      MatchExitInfo* exit = gm_GetGameModeStateExitData(state);
      ssize_t i;
- 
++#ifdef MU_NATIVE
++    const u8 results_id = id0;
++#endif
++
 +#ifdef MU_NATIVE
 +    /* General Codes, "Salty Runback": A and B held on any port at the end of a match replays it
 +     * (state 2). */
@@ -107203,11 +107207,26 @@ index 61bebcfb0..e8283d103 100644
 +            id0 = 0;
 +    }
 +#endif
-+
+ 
      for (i = 0; i < GM_MAX_PLAYERS; i++) {
          if (exit->match_end.player_standings[i].pkind == Gm_PKind_Human) {
-             gm_80162574(exit->match_end.player_standings[i].ckind,
-@@ -300,21 +393,21 @@ void gmVsMelee_ExitResults(GameModeState* state, VsModeData* vs, u8 state_id)
+@@ -225,6 +321,15 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
+                                       gm_80162800(&exit->match_end));
+     }
+ 
++#ifdef MU_NATIVE
++    /* The KO stars on the character select are counted when the results screen is left
++     * (gmVsMelee_ExitResults). A match that skips that screen (online, a rematch, or "Show results
++     * screen" off) never counted them; Slippi's "CSS KO Stars" code counts them as a VS match is
++     * left instead (offline VS only), which is done here. */
++    if (!gm_MatchHasMultipleWinners(&exit->match_end) && id0 != results_id && mu_online_codes() == 0) {
++        gmVsMelee_UpdateKOCounts(ko_counts, &exit->match_end);
++    }
++#endif
+     if (!gm_MatchHasMultipleWinners(&exit->match_end)) {
+         gm_SetNextGameModeStateId(id0);
+     } else {
+@@ -300,21 +405,21 @@ void gmVsMelee_ExitResults(GameModeState* state, VsModeData* vs, u8 state_id)
              unk = gm_80172DD4(gmMainLib_8015ED98()->x0);
              if (unk != ChKind_None) {
                  gm_InitChallengerData(match_end->player_standings[idx].ckind,
@@ -117551,7 +117570,7 @@ index 6cf45d12e..02e60aa67 100644
  /* 1C58E0 */ Item_GObj* Ground_801C58E0(s32, s32);
  /* 1C5940 */ int Ground_801C5940(void);
 diff --git a/src/melee/gr/grpstadium.c b/src/melee/gr/grpstadium.c
-index fb1668c71..45529e192 100644
+index fb1668c71..49263022e 100644
 --- a/src/melee/gr/grpstadium.c
 +++ b/src/melee/gr/grpstadium.c
 @@ -15,7 +15,6 @@
@@ -117994,9 +118013,18 @@ index fb1668c71..45529e192 100644
      HSD_SisLib_803A7664(gp2->win_dynamic_p);
  
      if (player_num == 1) {
-@@ -1749,8 +1756,7 @@ void grStadium_801D3BBC(Ground_GObj* arg0)
+@@ -1747,10 +1754,15 @@ void grStadium_801D3BBC(Ground_GObj* arg0)
+         gp2->win_dynamic_p->default_kerning = 1;
+     }
      colors.s.presets = grPs_803B7F8C;
-     vertical_offset = colors.entries[player_num].packed;
+-    vertical_offset = colors.entries[player_num].packed;
++    /* The preset is four bytes read as one big-endian word on the console (0x50 = 80 for one
++     * leader). Read as a little-endian word it was 0x50000000: the names were placed far off and
++     * a 32-unit step between two names was lost to float rounding, so they drew over each other. */
++    {
++        const u8* b = (const u8*) &colors.entries[player_num];
++        vertical_offset = (s32) (((u32) b[0] << 24) | ((u32) b[1] << 16) | ((u32) b[2] << 8) | b[3]);
++    }
      text_offset = 0;
 -    player_num = 0;
 -    do {
@@ -118004,7 +118032,7 @@ index fb1668c71..45529e192 100644
          if (Player_GetPlayerSlotType(player_num) != Gm_PKind_NA &&
              Player_8003219C(player_num) == 0)
          {
-@@ -1778,8 +1784,7 @@ void grStadium_801D3BBC(Ground_GObj* arg0)
+@@ -1778,8 +1790,7 @@ void grStadium_801D3BBC(Ground_GObj* arg0)
                  text_offset += 0x20;
              }
          }
@@ -118014,7 +118042,7 @@ index fb1668c71..45529e192 100644
  }
  
  const StadiumAlphaPresets grPs_803B7F8C = { {
-@@ -1867,7 +1872,7 @@ void grStadium_801D4194(Ground_GObj* arg0)
+@@ -1867,7 +1878,7 @@ void grStadium_801D4194(Ground_GObj* arg0)
  }
  
  /// HSD_DevComCallback
@@ -118023,7 +118051,7 @@ index fb1668c71..45529e192 100644
  {
      Ground_GObj* map_gobj;
      Ground* gp;
-@@ -1880,29 +1885,25 @@ static void fn_801D4220(int dcreq, int args, void* buf, bool cancelflag)
+@@ -1880,29 +1891,25 @@ static void fn_801D4220(int dcreq, int args, void* buf, bool cancelflag)
      gp->u.stadium.xC4_b1 = false;
  }
  
@@ -118060,7 +118088,7 @@ index fb1668c71..45529e192 100644
  
  Ground* grStadium_801D4354(Ground_GObj* gobj)
  {
-@@ -1916,6 +1917,46 @@ char* datfiles[] = {
+@@ -1916,6 +1923,46 @@ char* datfiles[] = {
      "GrPs4.dat",
  };
  
@@ -118107,7 +118135,7 @@ index fb1668c71..45529e192 100644
  static struct VecScalar {
      Vec3 vec;
      float scalar;
-@@ -2006,162 +2047,177 @@ void grStadium_801D435C(Ground_GObj* arg0)
+@@ -2006,162 +2053,177 @@ void grStadium_801D435C(Ground_GObj* arg0)
  
  void grStadium_801D4548(Ground_GObj* gobj)
  {
@@ -118401,7 +118429,7 @@ index fb1668c71..45529e192 100644
                  mpLib_80057528(0x55);
                  mpLib_80057528(0x6F);
              }
-@@ -2170,68 +2226,70 @@ void grStadium_801D4548(Ground_GObj* gobj)
+@@ -2170,68 +2232,70 @@ void grStadium_801D4548(Ground_GObj* gobj)
          Camera_RequestQuake(QuakeKind_Loop, NULL);
          return;
      case 5:
@@ -118516,7 +118544,7 @@ index fb1668c71..45529e192 100644
  }
  
  /**
-@@ -2253,7 +2311,7 @@ bool grStadium_801D4FF8(int pl_slot)
+@@ -2253,7 +2317,7 @@ bool grStadium_801D4FF8(int pl_slot)
      return false;
  }
  
@@ -118525,7 +118553,7 @@ index fb1668c71..45529e192 100644
  {
      grStadium_801D1EF8(gobj);
      grDisplay_801C5DB0(gobj, arg1);
-@@ -2290,3 +2348,28 @@ void grStadium_801D511C(void)
+@@ -2290,3 +2354,28 @@ void grStadium_801D511C(void)
  
      lbDvd_80017740(0, 0x7D5, 4, 4, 0x50000, 0, 7, 0x10, 0);
  }
@@ -150839,7 +150867,7 @@ index 004e1a095..04271f713 100644
  
      Item_80268E5C(gobj, 0, ITEM_ANIM_UPDATE);
 diff --git a/src/melee/it/kinds/itwhitebea.c b/src/melee/it/kinds/itwhitebea.c
-index f8c2674d1..8ce3bd30b 100644
+index f8c2674d1..2cc23f856 100644
 --- a/src/melee/it/kinds/itwhitebea.c
 +++ b/src/melee/it/kinds/itwhitebea.c
 @@ -3,8 +3,8 @@
@@ -150908,7 +150936,20 @@ index f8c2674d1..8ce3bd30b 100644
      Item* ip2;
      f32 dx;
      f32 dy;
-@@ -319,16 +317,12 @@ void it_802E37BC(Item_GObj* gobj)
+@@ -288,7 +286,11 @@ void it_802E3784(Item_GObj* gobj, Item_GObj* ref_gobj)
+ void it_802E37A4(Item_GObj* gobj)
+ {
+     if (gobj != NULL) {
+-        GET_ITEM(gobj)->xDD4_itemVar.freeze.x20 = NULL;
++        /* The Topi's own field (ip+DF4). Written through the ice block's struct it was the
++         * same word on the console; with 64-bit pointers the block's x20 lies 8 bytes further
++         * on, so the Topi kept a pointer to a block already freed and read it (a crash at
++         * it_8028ECF0 / HSD_GObjGetUserData on Icicle Mountain). */
++        GET_ITEM(gobj)->xDD4_itemVar.whitebea.x20 = NULL;
+     }
+ }
+ 
+@@ -319,16 +321,12 @@ void it_802E37BC(Item_GObj* gobj)
  bool it_802E3884(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -150928,7 +150969,7 @@ index f8c2674d1..8ce3bd30b 100644
          if (HSD_Randf() < it_804D6D40->x8) {
              it_802E4980(gobj);
          } else {
-@@ -382,11 +376,11 @@ bool itWhitebea_UnkMotion0_Coll(Item_GObj* gobj)
+@@ -382,11 +380,11 @@ bool itWhitebea_UnkMotion0_Coll(Item_GObj* gobj)
  void it_802E3AC8(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -150942,7 +150983,7 @@ index f8c2674d1..8ce3bd30b 100644
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
      it_8027C56C(gobj, ip->facing_dir);
-@@ -431,7 +425,7 @@ bool itWhitebea_UnkMotion1_Anim(Item_GObj* gobj)
+@@ -431,7 +429,7 @@ bool itWhitebea_UnkMotion1_Anim(Item_GObj* gobj)
  void itWhitebea_UnkMotion1_Phys(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -150951,7 +150992,7 @@ index f8c2674d1..8ce3bd30b 100644
      s32 range;
      PAD_STACK(16);
  
-@@ -465,7 +459,7 @@ bool itWhitebea_UnkMotion1_Coll(Item_GObj* gobj)
+@@ -465,7 +463,7 @@ bool itWhitebea_UnkMotion1_Coll(Item_GObj* gobj)
  void it_802E3DA0(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -150960,7 +151001,7 @@ index f8c2674d1..8ce3bd30b 100644
      PAD_STACK(8);
      ip->xDD4_itemVar.whitebea.x40 = 0;
      ip->x40_vel.x *= attrs->x4;
-@@ -567,10 +561,10 @@ bool itWhitebea_UnkMotion4_Coll(Item_GObj* gobj)
+@@ -567,10 +565,10 @@ bool itWhitebea_UnkMotion4_Coll(Item_GObj* gobj)
  void it_802E40A4(Item_GObj* gobj)
  {
      Item* ip = HSD_GObjGetUserData(gobj);
@@ -150973,7 +151014,7 @@ index f8c2674d1..8ce3bd30b 100644
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
      it_8027C56C(gobj, ip->facing_dir);
-@@ -618,8 +612,8 @@ bool itWhitebea_UnkMotion2_Anim(Item_GObj* gobj)
+@@ -618,8 +616,8 @@ bool itWhitebea_UnkMotion2_Anim(Item_GObj* gobj)
      if (!it_80272C6C(gobj)) {
          ip->xDD4_itemVar.whitebea.x40 = 0;
          ip = HSD_GObjGetUserData(gobj);
@@ -150984,7 +151025,7 @@ index f8c2674d1..8ce3bd30b 100644
          ip->x40_vel.z = 0.0f;
          ip->x40_vel.y = 0.0f;
          it_8027C56C(gobj, ip->facing_dir);
-@@ -680,7 +674,7 @@ bool itWhitebea_UnkMotion5_Coll(Item_GObj* gobj)
+@@ -680,7 +678,7 @@ bool itWhitebea_UnkMotion5_Coll(Item_GObj* gobj)
  void it_802E4464(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -150993,7 +151034,7 @@ index f8c2674d1..8ce3bd30b 100644
      PAD_STACK(8);
      it_802762BC(ip);
      ip->x40_vel.y = attrs->x10;
-@@ -721,7 +715,7 @@ void it_802E4558(Item_GObj* gobj)
+@@ -721,7 +719,7 @@ void it_802E4558(Item_GObj* gobj)
  bool itWhitebea_UnkMotion7_Anim(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -151002,7 +151043,7 @@ index f8c2674d1..8ce3bd30b 100644
      PAD_STACK(16);
      if (!it_80272C6C(gobj)) {
          ip->xDD4_itemVar.whitebea.x3C = 1;
-@@ -763,7 +757,7 @@ void it_2725_Logic9_Dropped(Item_GObj* gobj)
+@@ -763,7 +761,7 @@ void it_2725_Logic9_Dropped(Item_GObj* gobj)
      PAD_STACK(8);
      it_8027CBA4(gobj);
      ip = GET_ITEM(gobj);
@@ -151011,7 +151052,7 @@ index f8c2674d1..8ce3bd30b 100644
      ip->xDD4_itemVar.whitebea.x40 = 0;
      ip->x40_vel.x *= attrs->x4;
      if ((ip->facing_dir > 0.0f && ip->x70_nudge.x < 0.0f) ||
-@@ -837,9 +831,7 @@ bool itWhitebea_UnkMotion10_Coll(Item_GObj* gobj)
+@@ -837,9 +835,7 @@ bool itWhitebea_UnkMotion10_Coll(Item_GObj* gobj)
  void it_802E4980(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);

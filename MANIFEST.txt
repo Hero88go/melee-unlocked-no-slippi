@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-468a250011a989b42534b8d8a25b7ccdbecc082457224f6d33d4481d1902fdf6         8  VERSION
+60710a2c40defa073f844c34adc90e3967363b3a009d7627249fb220a17408e7         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -70,7 +70,7 @@ ab15b8fccfb6da028413efc04388d06947a78faaf777b6a59005ccede45a9e5d    866934  port
 25d87d85c98c3fab4e566f004484509544dc4240f3da3aa455311a80c631b76d      1972  port/app/melee_unlocked.rc
 60ad032af12aeef5c1bbec36885cc60a4249018d62312d34d146db4aa6929293     20088  port/app/settings_window.cpp
 38601fe10d922fc5bd28c35be2ee6887ceafa8f2269ac37a173a040bb6037655      2486  port/app/source_guest_boundary.cpp
-3b66ac40d0b115b6b0845ab5df0e9d647e495f5a4a803cc7e83fa349a15934cc    170835  port/app/source_host.cpp
+124190ff8c7cc9437d60e01bcaad1ab328c83107d7584e57dfea3f6c358262c5    171843  port/app/source_host.cpp
 8acf863f039ebb83e090655ba95f1e556dcc3ef63b3bd0886588e7b8afd33452      2897  port/app/source_host.h
 f9629454975ade39855d0b79170097127d9c98c03b36094b7955fbaaa3d591cc      2082  port/app/source_noslippi.cpp
 fe285928e434047c63a9cc382aa7440a4594ef31273c301461511d7c48108643     22196  port/app/source_p2p.cpp
@@ -164,7 +164,7 @@ cf465e78bc884d3b53a686baf70c3c18691078bcdd301af8f6ff40e9d54a2cd6      2382  port
 c7b60df1b3784564cfd931d261ade1e35fc9493333fc24442643b028931560f7       862  port/runtime/gx/native_pose_bridge.h
 ef74f7373b103b20df50390797b7f78d2d3bfcb2171503cd90dd64e650a8432a     10608  port/runtime/gx/net_overlay.cpp
 6e2875e57deeb0a74663444da82e54e17bce037fa8836c3cbb9bf674422d72e4      1466  port/runtime/gx/net_overlay.h
-7056b49432b6315b4b57352db025ad5ec66b77e5b04831277f6552a3b9af0df0    520020  port/runtime/gx/pc_settings.cpp
+6732ece5938612fa3e68be8a9501a25244075dfb887bed3d89e641fd02e08398    521516  port/runtime/gx/pc_settings.cpp
 019ab2fa356084b0cf1d6792aa4001abb4c41888055a452160ce315b88081ea2      2957  port/runtime/gx/pc_settings.h
 725b38c56ddf086939c26bf430e778c37382995d899ff6e01768c9530882cf00     13962  port/runtime/gx/pc_settings_dx11.cpp
 79036b5bebce3bf688c8a99b993570ec7c17d075603be850d16a3747822c97f9      5089  port/runtime/gx/pc_settings_shared.h
@@ -180,7 +180,7 @@ cef2b7ba03e52e558546741479ea2f004a5df0ae93bdb88c3d03b53390cdbcb9      1365  port
 8a2a7f52830c30d17bde5059f178c5ead9e198bb083c56e3fa0484d81320b920     43269  port/runtime/gx/texture_pack.cpp
 985d4855e81258da67ffcc07afaf775bb1476fcb7e7cf4582d44988e0148e964      5762  port/runtime/gx/texture_pack.h
 de6c41eeaec40d6a249226c9dfb9f35c2dee85a9295c3dfd1158449ab89c49e9      5397  port/runtime/gx/texture_snapshot.h
-c22b8842ff7a5ecffd0c6b046e057cacbf7f21cd470ad98d9f66ea0439dbec4a     25661  port/runtime/gx/threaded_backend.cpp
+1c01cb51d4eb254337df0b21d13c6ac2b11e6b66f86eed893e534f6e61ec2c45     26884  port/runtime/gx/threaded_backend.cpp
 9fece5e906782e99a950962b64fba1642b64ea2cf4250b0dfe48990a85ef9633       266  port/runtime/gx/threaded_backend.h
 0bc14e216fbc92070601c2a5e916e0e4b4f92363c7fdffd272d6d870d03e1c8d     12448  port/runtime/gx/training_overlay.cpp
 30978e8a3003f72da7e84c48825e87b0c5d00c16a6d1e5a3c042950e2d8b1131      1375  port/runtime/gx/training_overlay.h
@@ -254,8 +254,8 @@ c9fc42516ccb6347127bbde816268db2ef2753c64b1ed514c89ce01d42b20434      2624  port
 9812d0c8c1996a169027f4ef64be63517968250081419cb15d08acc01973c00c      1569  port/runtime/hle/hle.h
 1c3d1f800a50d74359eb92e5c17409b065afd930bab2959f9c0305c1db467c37     19435  port/runtime/hle/hle_card.cpp
 f333d39d6dc61ea297ecf6d0ccef69f89d48199395b5982b629343f0af622c05      9767  port/runtime/hle/hle_dvd.cpp
-b44c815ae49a5a901350d8d9f14759ad8a4aebba1ad7374551340cd45fda273f      2184  port/runtime/hle/hle_os.cpp
-aefe746d47a352d38274aa8d240fbad5920670d324fb2ae17ee43b1669a7ce79     22296  port/runtime/hle/hle_pad.cpp
+f32fbe3aa15de06dd987d106da9d5d52d6cf61d623df6bb49e10b6f24667faf8      2769  port/runtime/hle/hle_os.cpp
+b771cb0420cac7e6d5901ce344f5d5f7b48729860e562777aa5f52d17abda080     22251  port/runtime/hle/hle_pad.cpp
 077b547f08ddbaf96fef4426b1ac240d49429c35185c5ee41f2af08ad0a9cef2     18780  port/runtime/hle/hle_stubs.cpp
 18f20c2501014d47c1e6340f274a2918df9db9ca35c82a4a8c46fa42817d488d      2919  port/runtime/hle/native_online_policy.h
 e6b856aff9c42205e9a7aca72166b69f598d70c4a23194dfca373a1d0002cb68     16701  port/runtime/hle/native_savestate.cpp
@@ -263,15 +263,15 @@ e1a20691e8439828c1b6abf9e3e24fcd3a13e1f384a3f3bba0c5645c6213286e      7035  port
 cc052502070cc4a12dbc8eb1d8e84a21f565b2deb599d805704abb95d3345515      2983  port/runtime/hle/native_state_layout.h
 750a31c1a93c8251a02625ed3365de8ede811061ef9a095726c99787311e6d2e      2936  port/runtime/hle/offline_results_code_policy.h
 7c0951154935c63c156250f6fdabc1c7683dc6d61946750a488b4abffc71433c      1888  port/runtime/hle/unlock_code_policy.h
-93613ca131012d373fd494bc3e4b50d46112434bad5c2ac23f010d2f0d60bb4a     79088  port/runtime/host/audio.cpp
+5162371533ee4e45d759a00a30ce1f18617679f75e72aae1a80460e83b4893cf     80101  port/runtime/host/audio.cpp
 0ebac6f83e39327b1c98a50384ec711c3d03c2d25e1c83b180c9b09d56638440      3879  port/runtime/host/audio.h
 0a92e970df8cc9d690087ec6204f6ff63ebc78d36dc1b1a6c781ba6b7d10bdb4      1672  port/runtime/host/audio_buffer_policy.h
 40ab90bf852fdb99eb9266b246643b40deb9c5b0308f22d00238f93c985165e9       595  port/runtime/host/audio_sample_conversion.h
 7da9657f401f60656b737c5b0fd4f3ac14fb73f6b9fc18ccd2e03b5e039887dd      4433  port/runtime/host/card_backup.h
 79fb46115d41bc537a61c8dd9d673c96143722550ae50307763a79222884f322      6339  port/runtime/host/controller_profiles.cpp
 8bf81dd99a97e51d7d63d81c1af46f69a14119872a00f4797531c5116be802eb      2524  port/runtime/host/controller_profiles.h
-c302af8940e495d465e8b9700dd58597769546e2cc4e7e84ec35e5544fef1d28    306045  port/runtime/host/cosmetic_mods.cpp
-510e4a1da9f6fec7058d85f27714e5085b3a735f2f0cc091ee7e757d44a9b57a     22335  port/runtime/host/cosmetic_mods.h
+5fd0380bcbc8a1a355c1d872c0826dbfd90e9b294da793bd682517ce7095f851    313040  port/runtime/host/cosmetic_mods.cpp
+c510282a315fde47d094166d11d4b9bdfa1d21ecde524c42995fd018388c2643     22846  port/runtime/host/cosmetic_mods.h
 e6e8e2df94edb47ecde673648ee49a32c7cfa854dfb86d0f652767daadf80807      1306  port/runtime/host/disc_archive.h
 20ee740d073629bacf2a922ac8cc16b5613aa0e88f85f5ba69c6a40c9b076aba      2730  port/runtime/host/disc_fst_paths.cpp
 1a32dc84789cb85219f52c8e183d3e66a96ec5935255e95528f1f930f4c68b59       310  port/runtime/host/disc_fst_paths.h
@@ -286,9 +286,9 @@ e1f957a335b5c549e687d89a98eb07b4d927a48b9bf0aed5d0e69d3792d2e23c     25940  port
 116da8f5800319f8532331e934733402afd9e39250ad28344dd20ff5e3eb4ae1     11679  port/runtime/host/hackpack_source.h
 e6cdf166e069a25e16ff8110c9b883233e4720fd7de31348ea22361986cb861b     16824  port/runtime/host/hid_pad.cpp
 e04bde03941e69b8755596efa647e7ae4aca0232bf8bcbcef4f5ada8b502bdd5      3932  port/runtime/host/hid_pad.h
-3cf412367a84b695be8493d073dde1771364ff4714b925a394dfa81c5f00aa49    152540  port/runtime/host/host.cpp
+0c72f2721f3b8f23cbc6e51029b4c0ce2cf9eab19b633ab454767e0ba21df20a    153456  port/runtime/host/host.cpp
 50da7e22b4c07b2de373a8e12667fdc85486dd1bd305049176c2da59862bc263     18435  port/runtime/host/host.h
-e64273731ff66934ad3fce677a4b648b2ec27a2fef807a4a87e3164de13d25ee     35022  port/runtime/host/input_bindings.h
+fff30d845acbf323ee7085f1f192649ecc04bf5982a1575de3235c72d0302084     35923  port/runtime/host/input_bindings.h
 a695cadefd3dff634dc2a5fdd2df33debd503a51bce1846d7ee25278ce7d4849     21163  port/runtime/host/lcancel.cpp
 f47b11b97e1115b5587ffe2186be0967c57a6d0a368cc92459506f6a0fe5f678      2435  port/runtime/host/lcancel.h
 8c4bfea1f46cca80395dbd49f8d3cc9688b320ec858b130859bb4d8c9aaf0c50       248  port/runtime/host/memory_range.h
@@ -332,7 +332,7 @@ e58256ed2ce725dfd94c289290e21b37993c7e1ab5183e7e49d0ba2f8242c2a5      9144  port
 3a1d172d18aadf012500854a5f0a480ae3cfdd1eac91f320d1f8e98edcb0854d   1270052  port/runtime/host/user_gecko_targets.h
 01c35b48a52c7549f16ce465a74ad1b3d36fbb77bd90a399e6799d995931d19f      6401  port/runtime/host/vcdiff.cpp
 2ce067cd9371e75a36fe88827cc5f982d22a005b4c27c7946ef9e7dccc83b1ea       595  port/runtime/host/vcdiff.h
-7daa717453e1caae07d3c27c7a3976f258617458835ea6ccf9cf293bdfd2e2f6     72017  port/runtime/host/window.cpp
+256cd13cc5ae61a01d7c43f39a7353867549b0003ecece40e1e03b25a2e99bfe     74494  port/runtime/host/window.cpp
 8d7d9ffa03aef8b2c2f5eda1fd244c19a56b250c99b41870fa02984c444a6c2e      3607  port/runtime/host/window.h
 f5b76a826352e5a048670952cefb99893f31fcff1b5b5f3aacc44147ce94879b     11064  port/runtime/mu_net/input_transport.cpp
 634af26f6de25ef87617764ea5121093c7d53e02454e138957d3374eff145279      8233  port/runtime/mu_net/input_transport.h
@@ -367,7 +367,7 @@ b9fd91e4c65aab884d1df3d23aa4525724609d4e3f343de0a013b2b7334a5f7b      2278  port
 3576540775e76c1d0e28a1644f90c72eeff211a741780615fb66b59c9dfb8eec      1894  port/runtime/ppc/render_observer.h
 8b509dfa0488b40bf6fe9fcf495eb32fac90315216e52706ea39d125d81ac73b      9956  port/runtime/ppc/stencil_format.h
 2f65d9981300b9baa85e56ec5cc56cc495799185c5afd2a1b6eaedab417ccf8d      1400  port/scripts/p2p_bot.txt
-302f311b516f2d9d1d39c49db0f8e3449aaea45e962508720390afc8e325f9f2    156131  port/tests/cosmetic_mods_test.cpp
+760649cb59aec5d65d341cb3f437562f5a94be7e31310a7c3171a44e26e0f992    161359  port/tests/cosmetic_mods_test.cpp
 24f389a77cbba6ee5c6ba2fa499a1ba8a1365dada53732d48375832fc0179b3d      1301  port/tests/disc_archive_test.cpp
 8fa6ca08f022aa2ee10401112ff221fea54c2f0c65cd6d27c0799ffe8008a1ad      1521  port/tests/disc_fst_paths_test.cpp
 b3ccdc462040e25b12a6917a4261258f34db20ec639ca7fa46f2847976215b22     91232  port/tests/launcher_lobby_p2p_test.cpp
@@ -1403,7 +1403,7 @@ ff826ee828e9e45ddf5cd0ad120d51dc20c49f5889522f90b352ede7db647f5e     43784  sour
 3d49434eb5ae2197fdd82b782a9bfee6bd6ca4a1c18786c4ed6321b1c3243a29     28169  sourceport/game/tmce/src/techchase.c
 67457facbe04ebca78e4dc092788f0d4c83880b0f86410b33b2d41cf79c737db     24376  sourceport/game/tmce/src/wavedash.c
 0f2697b62ff6d97fd568808cb06c0eacfbacceb683f8bd50f4c49ea6e92d1e95      2612  sourceport/game/tmce/src/wavedash.h
-5e6709413479af30a99ba26e81f06c2dc0a42fc66b83de29b17f1ca17ecb9b51   7524609  sourceport/patches/melee-native.patch
+3462e424ee8db5f344d84df34f49ca7733381fcaeb07b7c01fbfff95d482d863   7526584  sourceport/patches/melee-native.patch
 b504a221820abcee78d16a7339df74e54ddbc7ff0dafcfe41b64dc78111144d4      1027  sourceport/tools/cc1.sh
 90d6eeef317f5a1c3566cd0c740e5f9bba6eb9a2a1ef3987cdac573e79d17f70      6728  tools/disc_offset_audit.py
 e0d67570ac5212ea24dfb921da1491655a58381b3b135bfe974e73720bbbcd1a      2564  tools/fma_exact/extract_funcs.py

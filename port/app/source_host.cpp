@@ -1811,8 +1811,12 @@ void h_pad_read(MuPadStatus out[4]) {
 // Sending them straight to the adapter ignored the setting. A replay rumbles nobody.
 void h_pad_rumble(int32_t port, int32_t on) {
   if (g_replaying) on = 0;
+  // Online the game already keeps only the local player's motor (mu_online_motor_port), and what
+  // it passes is the controller port that player's input comes from, not their slot in the match.
+  // Comparing that with the slot dropped every rumble whenever the two differ (a player who is
+  // not player 1 online: no rumble at all on the Source Port, while the Static Recomp rumbled).
   if (slippi::online::is_online_match()) {
-    if (port == slippi::online::local_player_slot()) host::input_rumble_local(on != 0);
+    host::input_rumble_local(on != 0);
     return;
   }
   host::input_rumble(port, on != 0);
@@ -3082,10 +3086,16 @@ int run(void (*shutdown)(int)) {
   user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
-  if (entry(&api, &g_game) != 0) host::die("%s refused host API version %u", g_dll.c_str(), api.version);
+  // The game library and this program come from the same release and refuse each other otherwise.
+  // A mismatch is a partly updated install (one report: a 0.8.95 program with an older library
+  // left in place), so the stop says what to do; the start of the line is kept for grouping.
+  if (entry(&api, &g_game) != 0)
+    host::die("%s refused host API version %u: it is from another version of Melee Unlocked than %s. "
+              "Close the game and the launcher, then extract the whole release zip over the folder again", g_dll.c_str(), api.version, MELEE_PORT_VERSION);
   if (g_game.version != MU_GAME_API_VERSION || !g_game.state_snapshot || !g_game.state_regions ||
       !g_game.state_exclusions || !g_game.snapshot_ranges || !g_game.practice)
-    host::die("%s has game API version %u, expected %u", g_dll.c_str(), g_game.version, MU_GAME_API_VERSION);
+    host::die("%s has game API version %u, expected %u: it is from another version of Melee Unlocked than %s. "
+              "Close the game and the launcher, then extract the whole release zip over the folder again", g_dll.c_str(), g_game.version, MU_GAME_API_VERSION, MELEE_PORT_VERSION);
   slippi::native_practice::set_native_bridge(g_game.practice);
   slippi::native_practice::set_content_bridge(prepare_practice_content);
   slippi::online::set_plain_opponent_handler(plain_opponent);
