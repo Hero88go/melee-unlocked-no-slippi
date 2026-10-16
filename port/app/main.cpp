@@ -772,6 +772,16 @@ static void install_rng_seed_hook() {
     host::input_mark_match_start();
   });
 }
+// "Character select background plays through": fn_80263354, the character select background's think,
+// starts its animation over every 200 frames with HSD_JObjReqAnimAll(jobj, 0.0) (the call returning to
+// 80263394), so a custom background with a longer animation is cut off every 3.3 seconds. With the
+// setting on, that one call gets a null object, which HSD_JObjReqAnimAll returns on at once. A menu
+// visual only: nothing the match or a replay reads.
+static void install_css_background_hook() {
+  ppc::add_entry_hook(0x8036F8BCu, [](ppc::Context& c) {   // HSD_JObjReqAnimAll
+    if (c.lr == 0x80263394u && gx::css_background_free_active()) c.r[3] = 0;
+  });
+}
 #endif
 
 // Windows hands out ~15.6 ms timer granularity by default, so every pacing sleep (the 60 Hz
@@ -1978,6 +1988,7 @@ static int melee_main(int argc, char** argv) {
   ppc::configure_ram_translator(ram_translator);
 #ifndef MELEE_SOURCE_PORT
   install_rng_seed_hook();
+  install_css_background_hook();
   host::install_audio_pacing();
   host::install_console_clock();
   host::install_language_override();

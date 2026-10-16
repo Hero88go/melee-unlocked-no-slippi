@@ -23,6 +23,7 @@
 #include <deque>
 #include <condition_variable>
 #include <vector>
+#include "dxgi_paced_mode.h"
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
@@ -302,6 +303,8 @@ class D3D12Backend : public Backend {
 #endif
     set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
     set_low_poly_fighters(opts_.low_poly_fighters != 0);
+    set_fod_reflections(opts_.fod_reflections);
+    set_css_background_free(opts_.css_background_free);
     set_player_tags_always(opts_.player_tags_always != 0);
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
@@ -338,6 +341,37 @@ class D3D12Backend : public Backend {
   std::string profile_line() const override { return d3d12_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
+  // DXGI's own count of what reached the screen: presents shown, vertical refreshes that went by,
+  // and refreshes that showed the previous frame again. Frame statistics are only reported while
+  // the swap chain owns the display (exclusive or independent flip); while Windows composes the
+  // window with the desktop the call fails, and that is itself worth knowing for a stutter report.
+  std::string display_timing_line() override {
+    if (!swapchain_) return "no swap chain";
+    BOOL exclusive = FALSE;
+    swapchain_->GetFullscreenState(&exclusive, nullptr);
+    const char* mode = exclusive ? "exclusive fullscreen" : "windowed or borderless";
+    DXGI_FRAME_STATISTICS st{};
+    const HRESULT hr = swapchain_->GetFrameStatistics(&st);
+    char line[256];
+    if (FAILED(hr)) {
+      have_frame_stats_ = false;
+      if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT)
+        std::snprintf(line, sizeof line, "%s, display statistics reset (mode or output changed)", mode);
+      else
+        std::snprintf(line, sizeof line, "%s, no display statistics (0x%08X), usually because Windows composes the window with the desktop", mode, (unsigned)hr);
+      return line;
+    }
+    if (!have_frame_stats_) { have_frame_stats_ = true; last_frame_stats_ = st;
+      std::snprintf(line, sizeof line, "%s, the display owns the frames (statistics start)", mode); return line; }
+    const UINT shown = st.PresentCount - last_frame_stats_.PresentCount;
+    const UINT refreshes = st.SyncRefreshCount - last_frame_stats_.SyncRefreshCount;
+    last_frame_stats_ = st;
+    std::snprintf(line, sizeof line, "%s, the display owns the frames: %u frames shown over %u refreshes (%u refreshes repeated a frame)",
+                  mode, shown, refreshes, refreshes > shown ? refreshes - shown : 0u);
+    return line;
+  }
+  bool have_frame_stats_ = false;
+  DXGI_FRAME_STATISTICS last_frame_stats_{};
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   // EFB copies are about to be freed. texture_sets_ is keyed by resource pointer, so its entries for
@@ -1038,8 +1072,21 @@ void D3D12Backend::wait_frame_latency() {
 
 void D3D12Backend::create_swapchain_targets(bool resize) {
   for (auto& b : backbuffers_) b.Reset();
-  if (resize) check(swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                               swapchain_flags()), "resize");
+  if (resize) {
+    const HRESULT hr = swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, swapchain_flags());
+    // DXGI refuses a resize in the middle of a fullscreen change (seen on a laptop in exclusive
+    // fullscreen) with INVALID_CALL and leaves the old buffers as they were. Keep drawing at their
+    // size; the next size change asks again. Anything else (a lost device) still stops.
+    if (hr == DXGI_ERROR_INVALID_CALL) {
+      DXGI_SWAP_CHAIN_DESC1 desc{};
+      swapchain_->GetDesc1(&desc);
+      host::log("d3d12: resize to %dx%d refused (0x%08X); keeping %ux%u until the next size change",
+                client_w_, client_h_, (unsigned)hr, desc.Width, desc.Height);
+      client_w_ = (int)desc.Width; client_h_ = (int)desc.Height;
+    } else {
+      check(hr, "resize");
+    }
+  }
   for (UINT i = 0; i < 3; ++i) {
     check(swapchain_->GetBuffer(i, IID_PPV_ARGS(&backbuffers_[i])), "backbuffer");
     D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
@@ -1091,7 +1138,10 @@ void D3D12Backend::apply_fullscreen_mode() {
       mode.Width = (UINT)(desc.DesktopCoordinates.right - desc.DesktopCoordinates.left);
       mode.Height = (UINT)(desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top);
       mode.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-      if (mode.Width >= 320 && mode.Height >= 240) swapchain_->ResizeTarget(&mode);
+      if (mode.Width >= 320 && mode.Height >= 240) {
+        gx::pick_paced_mode(output.Get(), opts_.fps_cap, mode);
+        swapchain_->ResizeTarget(&mode);
+      }
     }
     const HRESULT hr = swapchain_->SetFullscreenState(TRUE, nullptr);
     if (FAILED(hr)) {

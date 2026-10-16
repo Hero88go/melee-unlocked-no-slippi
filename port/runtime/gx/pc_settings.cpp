@@ -1963,6 +1963,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
       else if (key == "fodreflections") options.fod_reflections = value != "0";
+      else if (key == "cssbackgroundfree") options.css_background_free = value == "1";
       else if (key == "truewidescreen") options.true_widescreen = value == "1";
       else if (key == "customtextures") options.custom_textures = value == "1";
       else if (key == "dumptextures") options.dump_textures = value == "1";
@@ -3266,7 +3267,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
   file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
        << "\nexclusivefullscreen " << options.exclusive_fullscreen
        << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
-       << "\nfodreflections " << options.fod_reflections
+       << "\nfodreflections " << options.fod_reflections << "\ncssbackgroundfree " << options.css_background_free
        << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
        << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
        << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
@@ -3837,6 +3838,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   set_low_poly_fighters(options.low_poly_fighters != 0);
+  set_fod_reflections(options.fod_reflections);
+  set_css_background_free(options.css_background_free);
   set_player_tags_always(options.player_tags_always != 0);
   static bool test_tab_set = false;
   if (!test_tab_set) {
@@ -6366,33 +6369,54 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                            "visual check use the clean disc resource online. Changes take effect after restart.");
         ImGui::TextWrapped("On the character select screen, L and R step the highlighted costume through "
                            "its installed skins, no restart needed.");
+        // Several files at once (batch import): each is imported as if picked alone, and the message
+        // counts them and names the ones that did not go in.
+        auto import_all = [](const std::vector<std::string>& files, auto&& one) {
+          if (files.size() == 1) return one(files[0]).message;
+          int done = 0; std::string failed;
+          for (const auto& f : files) {
+            const auto r = one(f);
+            if (r.ok) { ++done; continue; }
+            const std::string name = std::filesystem::u8path(f).filename().u8string();
+            if (failed.size() < 1500) failed += "  " + name + ": " + r.message + "\n";
+          }
+          std::string text = "Imported " + std::to_string(done) + " of " + std::to_string(files.size()) + " files.";
+          if (done) text += " Restart to apply them.";
+          if (!failed.empty()) text += " Not imported:\n" + failed;
+          return text;
+        };
         if (ImGui::Button("Import / Refresh...")) {
-          std::string path = host::cosmetics::choose_import_file();
-          if (!path.empty()) mod_message = host::cosmetics::import_file(path).message;
+          const auto files = host::cosmetics::choose_import_files();
+          if (!files.empty()) mod_message = import_all(files, [](const std::string& f) { return host::cosmetics::import_file(f); });
         }
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Import a Nucleus project ZIP, costume DAT/ZIP, or stage DAT/ZIP.\n"
+          ImGui::SetTooltip("Import a Nucleus project ZIP, costume DAT/ZIP, or stage DAT/ZIP. Select several to import them all.\n"
                             "Stage DATs use only their matching disc file. Unsafe stage changes stay offline.\n"
                             "A portrait or stock icon PNG works too when its name says the costume\n"
                             "(\"Fox Green.png\", \"PlFxGr stock.png\"), alone or as a ZIP of pictures.");
         ImGui::SameLine();
-        static std::string stage_dat_path;
+        static std::vector<std::string> stage_dat_paths;
         static int stage_dat_target = 0;
         if (ImGui::Button("Add stage DAT...")) {
-          stage_dat_path = host::cosmetics::choose_import_file();
-          if (!stage_dat_path.empty()) ImGui::OpenPopup("Import stage DAT");
+          stage_dat_paths = host::cosmetics::choose_import_files();
+          if (!stage_dat_paths.empty()) ImGui::OpenPopup("Import stage DAT");
         }
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Import a raw stage DAT with any filename. Choose which stage it replaces; no ZIP is required.");
+          ImGui::SetTooltip("Import raw stage DATs with any filename. Choose which stage they replace; no ZIP is required.\n"
+                            "Select several to add them all as versions of that stage, each in the random pick.");
         if (ImGui::BeginPopupModal("Import stage DAT", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
           static const auto slots = host::cosmetics::stage_slots();
           std::vector<const char*> names;
           for (const auto& slot : slots) names.push_back(slot.name.c_str());
-          ImGui::TextWrapped("Choose the stage this DAT replaces. Full custom stages are available offline.");
+          if (stage_dat_paths.size() > 1)
+            ImGui::TextWrapped("Choose the stage these %d DATs replace. Each becomes one version of it. Full custom stages are available offline.", (int)stage_dat_paths.size());
+          else
+            ImGui::TextWrapped("Choose the stage this DAT replaces. Full custom stages are available offline.");
           ImGui::SetNextItemWidth(280.f);
           settings_combo("Stage to replace", &stage_dat_target, names.data(), (int)names.size());
-          if (ImGui::Button("Import stage")) {
-            mod_message = host::cosmetics::import_stage_dat(stage_dat_path, slots[stage_dat_target].target_path).message;
+          if (ImGui::Button(stage_dat_paths.size() > 1 ? "Import stages" : "Import stage")) {
+            const std::string target = slots[stage_dat_target].target_path;
+            mod_message = import_all(stage_dat_paths, [&](const std::string& f) { return host::cosmetics::import_stage_dat(f, target); });
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
@@ -7019,6 +7043,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
                         "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
 #endif
+    // Both engines, every mode: it changes only how the menu background moves, never the game.
+    if (settings_toggle("Character select background plays through", &options.css_background_free)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("On: the character select background plays its whole animation instead of starting\n"
+                        "over every few seconds, so a custom background with a longer animation is not cut off.\n"
+                        "Menu visuals only, so it also works online.");
 
     // ---- L-cancel helpers ----
     // The indicator reads the fighter's action state and never writes anything, so it is display
@@ -7594,8 +7624,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           changed |= settings_slider("C-stick deadzone", &dz.c, 0, 60, dz.c ? "%d" : "Off");
           if (ImGui::IsItemActive()) g_show_dz_c_until = ImGui::GetTime() + 1.5;
           static const char* kRadiusTip =
-              "How far the stick reaches at a full push, like Dolphin's Radius. 100 leaves the\n"
-              "stick exactly as the controller sends it. Lower it if the stick hits full speed\n"
+              "How far the stick reaches at a full push, like Dolphin's Radius. 100 leaves the\n"
+              "stick exactly as the controller sends it. Lower it if the stick hits full speed\n"
               "before you have pushed it all the way: at 80 a full push gives 80% of the range.";
           ImGui::SetNextItemWidth(200.0f);
           changed |= settings_slider("Control stick radius", &dz.radius_main, 50, 100, dz.radius_main >= 100 ? "Full" : "%d%%");

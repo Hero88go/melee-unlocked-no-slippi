@@ -229,6 +229,13 @@ uint32_t hud_scales_packed();
 // reads it through MuHostApi.display_options, the Static Recomp's parts hook (host.cpp) reads it live.
 void set_low_poly_fighters(bool on);
 bool low_poly_fighters_active();
+// "Fountain of Dreams reflections" (RenderOptions::fod_reflections) for the Source Port, read through
+// MuHostApi.display_options when the stage loads. The Static Recomp follows the Gecko list instead.
+void set_fod_reflections(bool on);
+bool fod_reflections_active();
+// "Character select background plays through" (RenderOptions::css_background_free), read by both engines.
+void set_css_background_free(bool on);
+bool css_background_free_active();
 // "Always show player tags" (RenderOptions::player_tags_always), published the same way: the P1 / P2
 // markers over the fighters stay up for the whole match. Display only, both engines.
 void set_player_tags_always(bool on);
@@ -331,6 +338,9 @@ struct Backend {
   virtual std::string profile_line() const { return {}; }
   virtual void set_present_deadline(double) {}
   virtual double presentation_wait_seconds() const { return 0; }
+  // What the display side reported since the last call (D3D12: DXGI frame statistics), for the
+  // "pacing:" line. Called on the render thread.
+  virtual std::string display_timing_line() { return "display statistics not available"; }
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
   // Queueing backends take the frame's buffers and hand back recycled ones (no copy, no
   // per-frame reallocation on the simulation thread); `frame` comes back cleared either way.

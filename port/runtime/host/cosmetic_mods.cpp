@@ -329,8 +329,15 @@ bool write_atomic(const fs::path& path, const uint8_t* data, size_t size, std::s
   }
   if (ok) ok = FlushFileBuffers(file) != FALSE;
   CloseHandle(file);
-  if (ok) ok = MoveFileExW(temporary.c_str(), path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+  // A scanner or sync tool that has just opened the catalog makes the replace fail with a sharing
+  // or access error for a moment (a player's every skin change on character select failed this
+  // way). Ask again for up to about half a second before giving up.
+  for (int attempt = 0; ok; ++attempt) {
+    if (MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) break;
+    const DWORD why = GetLastError();
+    if (attempt >= 10 || (why != ERROR_ACCESS_DENIED && why != ERROR_SHARING_VIOLATION && why != ERROR_LOCK_VIOLATION)) ok = false;
+    else Sleep(50);
+  }
   if (!ok) {
     DeleteFileW(temporary.c_str());
     *error = "The cosmetic catalog could not be committed atomically.";
@@ -5762,6 +5769,24 @@ std::string choose_import_file() {
   dialog.lpstrFile = file; dialog.nMaxFile = (DWORD)std::size(file);
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   return GetOpenFileNameW(&dialog) ? wide_to_utf8(file) : std::string();
+}
+
+std::vector<std::string> choose_import_files() {
+  std::vector<wchar_t> buffer(1 << 20);   // room for a few thousand names
+  OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
+  dialog.hwndOwner = GetActiveWindow();
+  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat;*.usd;*.png;*.ssm)\0*.zip;*.dat;*.usd;*.png;*.ssm\0Costume or stage file (*.dat;*.usd)\0*.dat;*.usd\0ZIP archive (*.zip)\0*.zip\0Portrait or stock icon (*.png)\0*.png\0Voice bank (*.ssm)\0*.ssm\0";
+  dialog.lpstrFile = buffer.data(); dialog.nMaxFile = (DWORD)buffer.size();
+  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+  std::vector<std::string> files;
+  if (!GetOpenFileNameW(&dialog)) return files;
+  // One file: its full path. Several: the folder, then each name, each ended by a null.
+  const std::wstring first(buffer.data());
+  const wchar_t* name = buffer.data() + first.size() + 1;
+  if (!*name) { files.push_back(wide_to_utf8(first.c_str())); return files; }
+  for (; *name; name += std::wcslen(name) + 1)
+    files.push_back(wide_to_utf8((fs::path(first) / name).wstring().c_str()));
+  return files;
 }
 
 std::string choose_portrait_file() {
