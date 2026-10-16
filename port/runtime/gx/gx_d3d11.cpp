@@ -1596,7 +1596,7 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
   if (opts_.fod_reflections != fod_reflections_sent_) { fod_reflections_sent_ = opts_.fod_reflections; slippi::request_fod_reflections(opts_.fod_reflections); }
   // The Gecko code wins if both are somehow set, so the two can never widen the same frame twice.
-  set_true_widescreen(opts_.true_widescreen && !opts_.widescreen);
+  set_true_widescreen(opts_.true_widescreen && !opts_.widescreen, true_widescreen_aspect(opts_, client_w_, client_h_));
   float aspect = output_aspect();
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
@@ -1864,6 +1864,7 @@ unsigned D3D11Backend::gpu_frames_queued() {
 void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   video_bg::set_enabled(opts_.video_backgrounds);
   video_bg::begin_frame(frame.scene_major, frame.scene_minor);
+  set_css_scene(video_bg::learning::scene_slot(frame.scene_major, frame.scene_minor) == 0);
   widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_pipelines();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; samplers_.clear(); reset_bound(); }

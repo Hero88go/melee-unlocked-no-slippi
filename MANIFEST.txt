@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-6527fb7fa832b10fc3078047ca83607e05bc3911f2c9900471954eeefe648b0f         8  VERSION
+2d05130e5af2556aac2e033dc7d87e62bc28a8acd7fdec800a178b74a09b48c3         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -35,7 +35,7 @@ cd5f4481312bee98029dd8cac588656d0535acae5da20ca053cfc719c77f3ad7     10752  port
 b712fbd9c6146933ea65364d5756d2371e0736145808d1bb514fedbecf4a4f76      6856  port/app/emoji_2764.ico
 e65f937939ae5230082ac9271f5dd7b26a2caea200b52d0f4c83164f92984aa9     15254  port/app/emoji_wave.ico
 819c7c1e0a40edf09d3d64ad95b4568be286c8d4e8d0636cf757e92d954a6ead       642  port/app/launch_process.h
-7930b3fc33b5f20de87fc90c27ab09f0301af945fbcc715247f01345d4d6074a    110771  port/app/launcher.cpp
+963a2ae8c6e4ceda8a48d13fef61056bfbd61a67d55185b719997a5ae74cba50    112746  port/app/launcher.cpp
 d938ee0b5549591b7c614d02efd6c195c14eba234d63e9d0f6fb110077984a3d    206060  port/app/launcher.ico
 61ea51bc5af0e6cf4229a851cb6691a5211e5f86f2d46a19fa9fb3794e947c6a      3297  port/app/launcher.rc
 5192cd66b60b2d1f29f9fb31c0465a03e44a0bead758cbcf460b07fa7116dc2f    773814  port/app/launcher_bg.bmp
@@ -64,7 +64,7 @@ ad276e23c1b5f391f9279fe9307850e696b74067b0f0bcdff10d6a856291ae74      2043  port
 505c1f43720cdae14940b87eaef52fcc136c8b153c47cb41c6242cd5d886b121      7770  port/app/launcher_theme_picker.inl
 8864bc63021abae87806522bf80c8de3159e4d34f75e439b0982aab0f091eedd      3298  port/app/launcher_trace_view.cpp
 07c928c91f95aaaef0386dab03eb06a00659ebc7a8267787d55fc3e74def1cd5      1098  port/app/launcher_trace_view.h
-2678cec2952e09159f367ba167b69bc7aeaab7dd2a707783cae5b8bf908ccc2f    123674  port/app/main.cpp
+6e5bd4bcb995a87806dc0c3241832c26bc1830327fd48058a6f2823eb47435c2    124436  port/app/main.cpp
 ab15b8fccfb6da028413efc04388d06947a78faaf777b6a59005ccede45a9e5d    866934  port/app/melee_mark.bmp
 6670296ca0a51604e5f04aa9334511164542894c48b8f35e04eec2db84bcc67a    181772  port/app/melee_unlocked.ico
 25d87d85c98c3fab4e566f004484509544dc4240f3da3aa455311a80c631b76d      1972  port/app/melee_unlocked.rc
@@ -134,9 +134,9 @@ fdb8b053fc29c22b70abe3421062b936e4a49d082c1b2df6831af38786a66b70      1529  port
 232ba637142015d560c624ffd7feabfb66e94ff1bfa8faf5e716aaf347ff82e1       911  port/runtime/gx/gx_backend_dispatch.cpp
 dbd20a1ec4d93201b39d38e557f1127be0cc877f49d7fae4f107fc283c372beb     46956  port/runtime/gx/gx_core.cpp
 69f09973c20e492bdadffc32de96da536c00619ea83f32ad9e8c97e3e0579326     19785  port/runtime/gx/gx_core.h
-cfab2e211dcb8487d1350aba714320190c782858daae9a5514bea676ce1b9c8e    123189  port/runtime/gx/gx_d3d11.cpp
+cb269c1fbddfc9856e2c1727e9539541ad40bb95f20087858f21135ae2d0f193    123335  port/runtime/gx/gx_d3d11.cpp
 d100f66929bfe0796f100bce8c41d0650fe9ed8f0debeb08c3edb658ea87e15f       806  port/runtime/gx/gx_d3d11.h
-072daa8adea3269b24a9f4fdb2bd3fe36dc990c4e0214446304aeb3df25f4096    228921  port/runtime/gx/gx_d3d12.cpp
+3c91f4c736de2d59d7f7803c7095359b9d9eb7feabed1419fe5a463362bd6c78    230964  port/runtime/gx/gx_d3d12.cpp
 8b8f53e7f73eef496bbe022d55fa9dfc5ceea5cb280d769835183ccac379d268      1227  port/runtime/gx/gx_d3d12.h
 9592f68e187808a055ac8d76abd6f30649207aa19a445f6dd66afdaba23e7a1f     34033  port/runtime/gx/gx_dlss5.cpp
 a34e6c412f40e28cb0be2ea9c0640abf980d80a59c29d118232e291279a0663d      5862  port/runtime/gx/gx_dlss5.h
@@ -149,8 +149,8 @@ b4ab9de1a36acf80ce216eef4aad7c648dacafb424bbbc049dccd0be238ff0e2      1841  port
 3abed82b9a258bc35cb2240f1066d71833af92ba37f57f9afb57fd3a04443dc2      6992  port/runtime/gx/gx_dxr_scene.cpp
 3c1ebf60d87519b0bc8ac42d4d7520ada686bbaae2b78f8f61f8f1a3c5784720      1490  port/runtime/gx/gx_dxr_scene.h
 9fe0b75fbf98f9dadb78bf72f30f0caf56d29e3253594d90cfa2bce2ef35e068      8437  port/runtime/gx/gx_regs.h
-f4ba7ec9bcefcb543a4fc0f06e60a5ed112e0ddd6917d06a6fd714732da6a419     54320  port/runtime/gx/gx_shader.cpp
-cafe43c9b6ed7023b0783d772915953881d0e58d7bc7fd401f3d1bc323c191ef      5470  port/runtime/gx/gx_shader.h
+a0923180ff8f0d85ec332dc29b789adea763f1a264d38e57e2ee51cecc1927d9     58579  port/runtime/gx/gx_shader.cpp
+f7cda76650d168788f98991e91da725e0af9af6ebaaf4360d035451ae4f706a7      5733  port/runtime/gx/gx_shader.h
 36f0ffb4070fa7e265968e4eb84ebe41b715fce59cae10a6347a513b6596f97c     40809  port/runtime/gx/gx_streamline.cpp
 c2ab584be059010ad1f26acfb5988a07e2048eb97bf1971afcca890975c4344b      8389  port/runtime/gx/gx_streamline.h
 0fc500dbdf31e0959becaf7b850fb545fb1f61078de457f2dc9a3bf457aae2a6      6586  port/runtime/gx/gx_texture.cpp
@@ -165,14 +165,14 @@ cf465e78bc884d3b53a686baf70c3c18691078bcdd301af8f6ff40e9d54a2cd6      2382  port
 c7b60df1b3784564cfd931d261ade1e35fc9493333fc24442643b028931560f7       862  port/runtime/gx/native_pose_bridge.h
 ef74f7373b103b20df50390797b7f78d2d3bfcb2171503cd90dd64e650a8432a     10608  port/runtime/gx/net_overlay.cpp
 6e2875e57deeb0a74663444da82e54e17bce037fa8836c3cbb9bf674422d72e4      1466  port/runtime/gx/net_overlay.h
-d2f65aa454374bebe6f06ee7df2baff4268fb66d0739fe9b059c723bf895e163    523858  port/runtime/gx/pc_settings.cpp
+0b99fe9c09987ee8b7420e3fc47120bc5e64338c7f8a0066d6ec2684b67bf8e8    525937  port/runtime/gx/pc_settings.cpp
 019ab2fa356084b0cf1d6792aa4001abb4c41888055a452160ce315b88081ea2      2957  port/runtime/gx/pc_settings.h
 725b38c56ddf086939c26bf430e778c37382995d899ff6e01768c9530882cf00     13962  port/runtime/gx/pc_settings_dx11.cpp
 79036b5bebce3bf688c8a99b993570ec7c17d075603be850d16a3747822c97f9      5089  port/runtime/gx/pc_settings_shared.h
 ac1c621881ea6dfa7f3d16fe7fe91136666e10904bac7dc00e2f8db31667ae27     54940  port/runtime/gx/pc_settings_visuals.inl
 dc22e3dcce85f8057b56f2a8b9d81f28d65a0143d6442cb7de05a1a4a3b7c083      1715  port/runtime/gx/radial_navigation.h
 6e69d72d7c5cb84d4d1840a83e43032530d5b19721673d9725a5bb3c740ae6e2     22240  port/runtime/gx/render_observer.cpp
-f988566e6896f27be075a65ced97e2fe21095d96c6678bb3b1ec382ea50c623f     24372  port/runtime/gx/render_options.h
+466a7b2ce495b291bac50de1a88a1084e02088491012b6c38d2b4378d499b298     26051  port/runtime/gx/render_options.h
 b0a317d60fdb3ce0efb8679938450d68f83cd43b2ee7364f67a80f50c15561af      8427  port/runtime/gx/replay_bar.cpp
 cef2b7ba03e52e558546741479ea2f004a5df0ae93bdb88c3d03b53390cdbcb9      1365  port/runtime/gx/replay_bar.h
 0384cba6160b978d55d715201ce21834b585763c1fb89ccbb8fbeb33af6e378e      6591  port/runtime/gx/shaders/dxr_pathtrace.hlsl
@@ -243,7 +243,7 @@ b389aa07c0e70e10b5a4135b3183e43aa5e960abc4e35200475c34e71e9b4271   2485649  port
 29fca7ca689ad2699fe385d3273b2b50425f88e8bd81797303c52254d7e09f03       722  port/runtime/gx/ui_sources/yampp/ORIGIN.md
 d026c1a1adefcbd697e6d2e900984434e1acacf774bd701c84916f71bc212d1e     20133  port/runtime/gx/user_shader.cpp
 fbe416778cbd3d520fbd115e187593697538823e0506d3ff678ac834a5515820      2144  port/runtime/gx/user_shader.h
-e5197409b3195dccab17d662f61f831486c375393c2886fd06555be4ba3e3c28     31346  port/runtime/gx/video_background.cpp
+479729804c9ef90f3339c48d1387cf964f4a42060ed97daa2cfa5f24eeeac290     31602  port/runtime/gx/video_background.cpp
 2bf953c109e30a543d1f25f107176938f96680fd918a86026359c31ee7c8d408      2957  port/runtime/gx/video_background.h
 76a4c65851b29cc765203c33cc9488f7711f90df90f7d5f4c44f6d987409a28b      3330  port/runtime/gx/video_background_learning.h
 249e39f65b56f5e1bafb061e03f1528f118d106a2815057985b1ff390b3c5df9      1177  port/runtime/gx/video_background_style.h
@@ -1084,7 +1084,7 @@ e5463f5ea1254a281e202ae248618b94bf32fbbc97e65248c243264a6f1cb88b      5613  port
 2d264ec3e6ce404fc2d0cfff4476c982eb3edf5a61122b03884fdef7bacd9deb    292720  port/third_party/stb/stb_image.h
 17f339e7582ff4d4d56e40b0e87d77eda8d8f8e62806278ddf8fcf0b8b3d9a84     72945  port/third_party/stb/stb_image_write.h
 8f5994085bb75fa8d29e454f260c8209f90a6654ec8a485604e9941de3d78ec0      1134  sourceport/cmake/mingw-w64-x86_64.cmake
-5f625a9647679ed1e88b18b58b60268c37296cdfcfe92e69a67d18568b46ecfd     25082  sourceport/game/CMakeLists.txt
+3cdf355942b12896ec63c30312fe4acbf5deff91f40d8b9ca9f62552a91bf9ab     25688  sourceport/game/CMakeLists.txt
 13aeee6e13d06bba19be4e507ba782e6c891ee567207ee46ddf2799bb44c3584     14811  sourceport/game/ace/bfalcon/bfalcon.c
 ad3b4fd5881f77fd5d6a9469ed20e1057105ec7de021d1a778c072aa5e2eb95b      4338  sourceport/game/ace/bfalcon/bfalcon.h
 53a6567e2bbb56fa39d24ee5e8a5e0416bdf718c532d7655d0fc114d27cbe3ed     11641  sourceport/game/ace/bfalcon/bfalcon_specials.c
@@ -1309,6 +1309,8 @@ abfa4c004c941266470f280c47cf426029b1357a39c9cda5f03edea5841605c9      3961  sour
 61b6d74d78570ca379de4a169b9ec16ff3729ba3861885a498fed60848f7098b      5610  sourceport/game/tests/match_override.c
 824092946d1f370433fc092763ae03d32538072c4e8fe8c1009df7878ce2d64f      6248  sourceport/game/tests/preload_compaction.c
 fbe9479f442d129bafeec6652c8a2285b9accecf32323bbd8eab8de78b24b4de       369  sourceport/game/tests/setjmp.c
+7936238f288a4b7bee9236c29d6d32bbbf26bf07c2dbce1bb6b1def98c5d6964      1757  sourceport/game/tests/sonans_damage.c
+1d0396a1ed6bb55b1cfc650d4d2db16567cd274cfff54227bbdabb3af5b5d588       194  sourceport/game/tests/sonans_damage_stubs.c
 0425ce8b026bd29d9e304c291c437438a83a1fce3c29f58e2838a8106efde08b      2788  sourceport/game/tests/synth_bank.c
 a3adb232c5021a98c5082feee49ce5c87c3a9dd7fa8da92de75e2805f66fbcff      1077  sourceport/game/tests/synth_ratio.c
 931f93dcf458ed78eae70337e1b87ecef376947c703b76e183f56da31429e4f2         9  sourceport/game/tmce/MexTK/cssFunction.txt
@@ -1404,7 +1406,7 @@ ff826ee828e9e45ddf5cd0ad120d51dc20c49f5889522f90b352ede7db647f5e     43784  sour
 3d49434eb5ae2197fdd82b782a9bfee6bd6ca4a1c18786c4ed6321b1c3243a29     28169  sourceport/game/tmce/src/techchase.c
 67457facbe04ebca78e4dc092788f0d4c83880b0f86410b33b2d41cf79c737db     24376  sourceport/game/tmce/src/wavedash.c
 0f2697b62ff6d97fd568808cb06c0eacfbacceb683f8bd50f4c49ea6e92d1e95      2612  sourceport/game/tmce/src/wavedash.h
-264cd5bbae122522ab1485050573727a92acf08c9bf1939642b9f3447cff8c90   7533177  sourceport/patches/melee-native.patch
+f7609e42fb70e725ccfb91d0198cb10409946c4f1f669a371e516506350872af   7535784  sourceport/patches/melee-native.patch
 b504a221820abcee78d16a7339df74e54ddbc7ff0dafcfe41b64dc78111144d4      1027  sourceport/tools/cc1.sh
 90d6eeef317f5a1c3566cd0c740e5f9bba6eb9a2a1ef3987cdac573e79d17f70      6728  tools/disc_offset_audit.py
 e0d67570ac5212ea24dfb921da1491655a58381b3b135bfe974e73720bbbcd1a      2564  tools/fma_exact/extract_funcs.py

@@ -113679,7 +113679,7 @@ index b5b2736b2..22853976c 100644
  /* 1FCDFC */ void grInishie2_801FCDFC(Ground_GObj*);
  /* 1FCE00 */ void grInishie2_801FCE00(Ground_GObj*);
 diff --git a/src/melee/gr/grizumi.c b/src/melee/gr/grizumi.c
-index 536bb3b2b..4a3b9b840 100644
+index 536bb3b2b..51ac212a1 100644
 --- a/src/melee/gr/grizumi.c
 +++ b/src/melee/gr/grizumi.c
 @@ -60,17 +60,20 @@ struct grIzumi_YakumonoParam {
@@ -113877,7 +113877,7 @@ index 536bb3b2b..4a3b9b840 100644
  {
      Mtx mtx;
      Vec3 vec;
-@@ -849,12 +914,18 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
+@@ -849,12 +914,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
      return NULL;
  }
  
@@ -113888,7 +113888,9 @@ index 536bb3b2b..4a3b9b840 100644
      IzumiReflection* refl = HSD_GObjGetUserData(gp->u.izumi.xC8);
      HSD_TObj* tobj = gp->u.izumi.xC4;
 +#ifdef MU_NATIVE
-+    if (!mu_lagless_fod()) {   /* Lagless FoD: there is no reflection matrix to copy */
++    /* Lagless FoD: there is no reflection matrix to copy. A stage skin without the reflection
++     * texture leaves tobj NULL (the "not found tobj" warning): nothing to copy into. */
++    if (!mu_lagless_fod() && tobj != NULL && refl != NULL) {
 +        PSMTXCopy(refl->texture_matrix, tobj->mtx);
 +    }
 +#else
@@ -113897,7 +113899,7 @@ index 536bb3b2b..4a3b9b840 100644
      grDisplay_801C5DB0(gobj, renderpass);
  }
  
-@@ -879,3 +950,22 @@ void grIzumi_801CD2D4(void)
+@@ -879,3 +952,22 @@ void grIzumi_801CD2D4(void)
      int size = GXGetTexBufferSize(80, 60, 4, '\0', 0);
      lbDvd_80017740(0, 2001, 4, 4, size + 31 & ~31, 0, 7, 16, 0);
  }
@@ -149908,7 +149910,7 @@ index bd1a01a9a..6e8f8ebc7 100644
      if (item_gobj != NULL) {
          it_802B1D40(item_gobj, parent);
 diff --git a/src/melee/it/kinds/itsonans.c b/src/melee/it/kinds/itsonans.c
-index 09ea2a853..6266221f2 100644
+index 09ea2a853..9c8e9b165 100644
 --- a/src/melee/it/kinds/itsonans.c
 +++ b/src/melee/it/kinds/itsonans.c
 @@ -35,7 +35,7 @@ ItemStateTable it_803F7CA0[] = {
@@ -149929,6 +149931,15 @@ index 09ea2a853..6266221f2 100644
      f32 angle;
      f32 max_angle;
      if (ip->ground_or_air == GA_Air) {
+@@ -101,7 +101,7 @@ void it_802CD4FC(Item_GObj* gobj)
+         HSD_JObjSetRotationZ(ip->xBBC_dynamicBoneTable->bones[4],
+                              0.017453292f * ip->xDD4_itemVar.sonans.x64);
+     }
+-    it_80272460(&ip->x5D4_hitboxes[0].hit, (u32) ip->xDD4_itemVar.sonans.x68,
++    it_80272460(&ip->x5D4_hitboxes[0].hit, mu_f2u(ip->xDD4_itemVar.sonans.x68),
+                 gobj);
+     ip->xDD4_itemVar.sonans.x68 -= attrs->x20;
+ }
 @@ -116,7 +116,7 @@ bool itSonans_Logic9_DmgDealt(Item_GObj* gobj)
  bool it_802CD7D4(Item_GObj* gobj)
  {
@@ -153760,7 +153771,7 @@ index e24280360..b911355e2 100644
  /* 01E60C */ HSD_FObj* fn_8001E60C(FigaTrack*, s8 frames);
  void lbAnim_8001E6D8(HSD_JObj*, FigaTree*, FigaTrack*, s8 frames);
 diff --git a/src/melee/lb/lbarchive.c b/src/melee/lb/lbarchive.c
-index fb0385b0d..dd32db72d 100644
+index fb0385b0d..f67f91cb6 100644
 --- a/src/melee/lb/lbarchive.c
 +++ b/src/melee/lb/lbarchive.c
 @@ -10,10 +10,6 @@
@@ -153793,7 +153804,7 @@ index fb0385b0d..dd32db72d 100644
      for (; symbol != NULL; symbol = va_arg(symbols, void**)) {
          symbol_name = va_arg(symbols, const char*);
          *symbol = NULL;
-@@ -52,29 +44,44 @@ void lbArchive_LoadSections(HSD_Archive* archive, void** symbol, ...)
+@@ -52,45 +44,58 @@ void lbArchive_LoadSections(HSD_Archive* archive, void** symbol, ...)
              OSReport("Cannot find symbol %s.\n", symbol_name);
          }
      }
@@ -153840,18 +153851,10 @@ index fb0385b0d..dd32db72d 100644
  
 -static inline void lbArchive_vLoadSectionsFatal(HSD_Archive* archive,
 -                                                void** symbol, va_list symbols)
-+static inline void vLoadSectionsFatal(HSD_Archive* archive, void** symbol,
-+                                      va_list symbols)
++#ifdef MU_NATIVE
++/* strstr for the costume fallback below (this tree's string.h has none). */
++static const char* mu_find(const char* text, const char* word)
  {
-     const char* symbol_name;
- 
-@@ -89,36 +96,15 @@ static inline void lbArchive_vLoadSectionsFatal(HSD_Archive* archive,
-     }
- }
- 
--static inline void lbArchive_vLoadSections(HSD_Archive* archive, void** symbol,
--                                           va_list symbols)
--{
 -    const char* symbol_name;
 -
 -    for (; symbol != NULL; symbol = va_arg(symbols, void**)) {
@@ -153860,11 +153863,59 @@ index fb0385b0d..dd32db72d 100644
 -        *symbol = HSD_ArchiveGetPublicAddress(archive, symbol_name);
 -        if (*symbol == NULL) {
 -            OSReport("Cannot find symbol %s.\n", symbol_name);
--        }
--    }
--}
--
- HSD_Archive* lbArchive_LoadSymbols(const char* filename, void* symbols, ...)
+-            HSD_ASSERT(112, 0);
++    size_t n = strlen(word);
++    for (; *text != '\0'; text++) {
++        if (strncmp(text, word, n) == 0) {
++            return text;
+         }
+     }
++    return NULL;
+ }
++#endif
+ 
+-static inline void lbArchive_vLoadSections(HSD_Archive* archive, void** symbol,
+-                                           va_list symbols)
++static inline void vLoadSectionsFatal(HSD_Archive* archive, void** symbol,
++                                      va_list symbols)
+ {
+     const char* symbol_name;
+ 
+@@ -98,8 +103,33 @@ static inline void lbArchive_vLoadSections(HSD_Archive* archive, void** symbol,
+         symbol_name = va_arg(symbols, const char*);
+         *symbol = NULL;
+         *symbol = HSD_ArchiveGetPublicAddress(archive, symbol_name);
++#ifdef MU_NATIVE
++        /* A costume file from another color slot (a skin put on the disc under the wrong name)
++         * names its model "PlyFox5KOr_Share_joint" where the slot asks for "PlyFox5K_Share_joint".
++         * Use the file's own model of the same fighter and the same part instead of stopping. */
++        if (*symbol == NULL && strncmp(symbol_name, "Ply", 3) == 0) {
++            const char* k = mu_find(symbol_name, "5K");
++            const char* part = mu_find(symbol_name, "_Share_");
++            if (k != NULL && part != NULL && k < part) {
++                const size_t head = (size_t) (k + 2 - symbol_name);
++                u32 i;
++                for (i = 0; i < archive->header.nb_public; i++) {
++                    const char* name = archive->symbols + archive->public_info[i].symbol;
++                    const char* other = mu_find(name, "_Share_");
++                    if (strncmp(name, symbol_name, head) == 0 && other != NULL &&
++                        strcmp(other, part) == 0)
++                    {
++                        OSReport("Costume file has %s in place of %s; using it.\n", name, symbol_name);
++                        *symbol = archive->data + archive->public_info[i].offset;
++                        break;
++                    }
++                }
++            }
++        }
++#endif
+         if (*symbol == NULL) {
+             OSReport("Cannot find symbol %s.\n", symbol_name);
++            HSD_ASSERT(112, 0);
+         }
+     }
+ }
+@@ -108,17 +138,11 @@ HSD_Archive* lbArchive_LoadSymbols(const char* filename, void* symbols, ...)
  {
      va_list sections;
      HSD_Archive* archive;
@@ -153884,7 +153935,7 @@ index fb0385b0d..dd32db72d 100644
  
      va_end(sections);
      return archive;
-@@ -128,17 +114,11 @@ HSD_Archive* lbArchive_80016DBC(const char* filename, void* symbols, ...)
+@@ -128,17 +152,11 @@ HSD_Archive* lbArchive_80016DBC(const char* filename, void* symbols, ...)
  {
      va_list sections;
      HSD_Archive* archive;
@@ -153904,7 +153955,7 @@ index fb0385b0d..dd32db72d 100644
  
      va_end(sections);
      return archive;
-@@ -148,41 +128,31 @@ void lbArchive_80016EFC(HSD_Archive* archive)
+@@ -148,41 +166,31 @@ void lbArchive_80016EFC(HSD_Archive* archive)
  {
      HSD_ASSERT(0xFC, archive);
      HSD_ASSERT(0xFD, archive->flags & HSD_ARCHIVE_DONT_FREE);
@@ -153959,7 +154010,7 @@ index fb0385b0d..dd32db72d 100644
      HSD_Archive* archive;
      bool preloaded;
      va_list args;
-@@ -193,23 +163,11 @@ bool lbArchive_80017040(HSD_Archive** dst, const char* filename, void* symbols,
+@@ -193,23 +201,11 @@ bool lbArchive_80017040(HSD_Archive** dst, const char* filename, void* symbols,
      if (archive != NULL) {
          preloaded = true;
      } else {
@@ -153985,7 +154036,7 @@ index fb0385b0d..dd32db72d 100644
  
      va_end(args);
  
-@@ -222,8 +180,6 @@ bool lbArchive_80017040(HSD_Archive** dst, const char* filename, void* symbols,
+@@ -222,8 +218,6 @@ bool lbArchive_80017040(HSD_Archive** dst, const char* filename, void* symbols,
  bool lbArchive_800171CC(HSD_Archive** dst, const char* filename, void* symbols,
                          ...)
  {
@@ -153994,7 +154045,7 @@ index fb0385b0d..dd32db72d 100644
      HSD_Archive* archive;
      bool preloaded;
      va_list args;
-@@ -234,23 +190,11 @@ bool lbArchive_800171CC(HSD_Archive** dst, const char* filename, void* symbols,
+@@ -234,23 +228,11 @@ bool lbArchive_800171CC(HSD_Archive** dst, const char* filename, void* symbols,
      if (archive != NULL) {
          preloaded = true;
      } else {
@@ -154020,7 +154071,7 @@ index fb0385b0d..dd32db72d 100644
  
      va_end(args);
  
-@@ -266,8 +210,16 @@ static inline void Locate(HSD_Archive* archive, intptr_t base_addr)
+@@ -266,8 +248,16 @@ static inline void Locate(HSD_Archive* archive, intptr_t base_addr)
      u32* ptr;
  
      for (i = 0; i < archive->header.nb_reloc; i++) {
