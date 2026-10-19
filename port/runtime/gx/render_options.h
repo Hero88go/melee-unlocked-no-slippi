@@ -54,7 +54,9 @@ struct RenderOptions {
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
   bool exclusive_fullscreen = false;
-  bool fod_reflections = true;  // keep Fountain of Dreams water/reflection effects on by default
+  // Off by default: Slippi's Lagless FoD, as the Source Port always runs it. A player's report found
+  // the reflection pass costly on the Static Recomp (0.8.99), and Slippi players expect the code on.
+  bool fod_reflections = false;
   // The character select background plays its animation through instead of starting over every 200
   // frames (fn_80263354). Menu visuals only, so it is the viewer's own in every mode.
   bool css_background_free = false;
@@ -68,6 +70,8 @@ struct RenderOptions {
   int reflex_mode = 0;
   bool reflex_stats = false;
   bool reflex_flash = false;
+  bool latency_test = false;
+  bool lossless_lag_test = false;   // the Lossless adapter's lag test at the next launch (main.cpp, shim/mu_lagtest.c)   // gx_core.h set_latency_test: X + D-pad Down paints the picture black or white
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
 #ifdef GX_DLSS5
   bool dlss5 = false;
@@ -179,6 +183,19 @@ struct RenderOptions {
   bool results_screen = true;
   static bool& live_results_screen() { static bool value = true; return value; }
   bool offline_delay = false;
+  // Slippi Dolphin's spectator server (Game tab, Online; ini keys slippi_spectator, on unless the
+  // file says 0, and slippi_spectator_port, 51441): the game's recording events on a local ENet
+  // port for the Slippi Launcher's Broadcast tab and stream overlays (hle/slippi_spectate.cpp).
+  // Read once when the game starts, as Dolphin creates its server once.
+  bool slippi_spectator = true;
+  static bool& live_slippi_spectator() { static bool value = true; return value; }
+  // After an online session ends (the opponent left, Z held to leave, the connection dropped) with at
+  // least one match played, go to Training mode's character select (Game tab, Online; ini key
+  // online_return_training, off by default). native_practice.cpp does it, on both engines.
+  bool online_return_training = false;
+  static bool& live_online_return_training() { static bool value = false; return value; }
+  int slippi_spectator_port = 51441;
+  static int& live_slippi_spectator_port() { static int value = 51441; return value; }
   static bool& live_offline_delay() { static bool value = false; return value; }
   // 20XX Hack Pack training options for CPUs (Game tab, Source Port only, offline only), native in
   // shim/mu_20xx_cpu.c. Plain options like "20XX CPUs": no pack or save needed. They go to the game
@@ -268,7 +285,7 @@ struct RenderOptions {
   bool path_tracing = false;       // D3D12 DXR diffuse indirect bounce, display-only and off by default
   bool ray_reconstruction = false; // DLSS-RR denoising of the path-traced HDR input; needs NVIDIA runtime
   float brightness = 1.0f, contrast = 1.0f, vibrance = 1.0f;
-  int anisotropy = 16;        // texture anisotropic filtering 1..16
+  int anisotropy = 4;         // texture anisotropic filtering 1..16 (4: the High preset, the default)
   int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)
   std::string capture_path;   // write a PPM of the presented image at capture_frame
   uint32_t capture_frame = 0;

@@ -30,132 +30,8 @@
 
 extern Fighter_CostumeStrings* ftData_803C2360[FT_KIND_TABLE_MAX];
 
-/* ---- MxDt.dat layout (big-endian, relocated in place by the archive loader) ---- */
-typedef DISC_PTR(char) MexStr;
-
-typedef struct MexMeta {
-    u8 major, minor;
-    u16 flags;
-    u32 ft_internal, ft_external, css_icons, gr_internal, gr_external, sss_icons, ssm, bgm, effects,
-        boot_scene, last_major, last_minor, trophies, trophy_sd;
-} DISC_STRUCT MexMeta;
-
-typedef struct MexCostumeFile {
-    MexStr file;
-    MexStr joint;
-    MexStr matanim;
-    u32 visibility;   /* the retail costume whose parts tables this costume reuses */
-} DISC_STRUCT MexCostumeFile;
-
-typedef struct MexCostumeInfo {
-    u8 count, red, blue, green;   /* the same layout as the retail per-character table */
-} MexCostumeInfo;
-
-typedef struct MexExtMap {
-    u8 internal, sub, flags;   /* external id -> internal fighter kind */
-} MexExtMap;
-
-typedef DISC_PTR(MexCostumeFile) MexCostumeFiles;
-
-typedef struct MexPlFile {
-    MexStr file;     /* "PlWf.dat" */
-    MexStr symbol;   /* "ftDataWolf" */
-} DISC_STRUCT MexPlFile;
-
-typedef DISC_PTR(u8) MexWords;   /* a table of big-endian words */
-
-typedef struct MexItemLookup {
-    u32 count;
-    DISC_PTR(u8) ids;   /* count big-endian u16 item kinds */
-} DISC_STRUCT MexItemLookup;
-
-/* The demo fighter's animation symbols (results, intro, ending, wait). */
-typedef struct MexFtDemo {
-    MexStr result, intro, ending, wait;
-} DISC_STRUCT MexFtDemo;
-typedef DISC_PTR(MexFtDemo) MexFtDemoPtr;
-
-typedef struct MexSsmFile {
-    u8 ssm_id;
-    u8 pad[3];
-    u32 x04, x08, x0C;
-} DISC_STRUCT MexSsmFile;
-
-/* m-ex MexTK/include/mxdt.h MexData.fighter; the index of each field is its m-ex table number. */
-typedef struct MexFighter {
-    DISC_PTR(MexStr) names;              /* 0 [external] display names */
-    DISC_PTR(MexPlFile) pl_files;        /* 1 [internal] */
-    DISC_PTR(u8) insignia;               /* 2 [external] emblem frame */
-    DISC_PTR(MexExtMap) ext_map;         /* 3 [external] */
-    DISC_PTR(MexCostumeInfo) costume_info;   /* 4 [external] */
-    DISC_PTR(MexCostumeFiles) costume_files; /* 5 [internal] -> [costume] */
-    DISC_PTR(MexFtDemoPtr) ftdemo;       /* 6 [internal] */
-    DISC_PTR(MexStr) anim_files;         /* 7 [internal] PlXxAJ.dat */
-    DISC_PTR(u8) anim_num;               /* 8 [internal] two big-endian words each: {0, count} */
-    DISC_PTR(u8) effect_index;           /* 9 [internal] the fighter's effect file */
-    DISC_PTR(MexStr) result_file;        /* 10 [external] */
-    DISC_PTR(u8) result_scale;           /* 11 [external] big-endian floats */
-    DISC_PTR(u8) victory_theme;          /* 12 [external] big-endian words */
-    DISC_PTR(u8) announcer_call;         /* 13 [external] big-endian words */
-    DISC_PTR(MexSsmFile) ssm_files;      /* 14 [internal] */
-    DISC_PTR(void) costume_pointers;     /* 15 runtime */
-    DISC_PTR(void) ft_archives;          /* 16 runtime */
-    DISC_PTR(u8) walljump;               /* 17 [internal] */
-    DISC_PTR(void) rst_runtime;          /* 18 runtime */
-    DISC_PTR(MexItemLookup) item_lookup; /* 19 [internal] the fighter's articles */
-} DISC_STRUCT MexFighter;
-
-typedef struct MexMenu {
-    DISC_PTR(void) param;
-    DISC_PTR(u8) css;   /* the character select data block; icons at +0xDC, 0x1C bytes each */
-    DISC_PTR(void) sss;
-} DISC_STRUCT MexMenu;
-
-/* One effect file: the game's own table entry (file, table symbol, loaded data). */
-typedef struct MexEffectFile {
-    MexStr file;     /* "EfWfData.dat" */
-    MexStr symbol;   /* "effWolfDataTable" */
-    u32 runtime;
-} DISC_STRUCT MexEffectFile;
-
-/* The sound bank table: one entry per bank in each list. */
-typedef struct MexSsm {
-    DISC_PTR(MexStr) files;   /* file name, no folder ("wolf.ssm") */
-    DISC_PTR(u8) sizes;       /* {sample data bytes, flag}, two big-endian words per bank */
-    DISC_PTR(u8) rows;        /* {group, load priority, unload priority, pitch threshold} */
-    DISC_PTR(void) runtime;
-} DISC_STRUCT MexSsm;
-
-typedef struct MexEffect {
-    DISC_PTR(MexEffectFile) files;
-} DISC_STRUCT MexEffect;
-
-/* MxDt "kirby": what Kirby needs per copied fighter. Read on Akaneia 1.0.1 (41 internal ids). */
-typedef struct MexKirby {
-    DISC_PTR(MexPlFile) cap_files;    /* +0  [internal] {hat file "PlKbCpWf.dat", "ftDataKirbyCopyWolf"} */
-    DISC_PTR(void) x4;                /* +4  [internal] words, all zero on the disc (runtime) */
-    DISC_PTR(void) costume_files;     /* +8  [internal] per-costume hat files; only retail kinds have any */
-    DISC_PTR(void) costume_runtime;   /* +C  [internal] */
-    DISC_PTR(u8) effect_ids;          /* +10 [internal] the effect file loaded with the hat, 0xFF none */
-    DISC_PTR(void) x14;               /* +14 [internal] words, all zero on the disc (runtime) */
-} DISC_STRUCT MexKirby;
-
-typedef struct MexData {
-    DISC_PTR(MexMeta) metadata;
-    DISC_PTR(MexMenu) menu;
-    DISC_PTR(MexFighter) fighter;
-    /* [m-ex ftFunction index] -> [internal] console addresses of the default callbacks (retail
-     * functions, or 0); a fighter file's ftFunction export overrides its own entries. */
-    DISC_PTR(MexWords) fighter_function;
-    DISC_PTR(MexSsm) ssm;         /* the sound banks, by bank id */
-    DISC_PTR(void) music;
-    DISC_PTR(MexEffect) effect;   /* the effect files, by effect file index */
-    DISC_PTR(void) item;          /* +1C the item tables */
-    DISC_PTR(MexKirby) kirby;     /* +20 */
-    /* +24 [kbFunction index] -> [internal]: retail functions, 0 for every added fighter (their hat
-     * files export their own). Not read: the added abilities are C (akaneia/common/mu_ak_kirby.c). */
-    DISC_PTR(MexWords) kirby_function;
-} DISC_STRUCT MexData;
+/* The MxDt.dat layout types are in mu_mex_data.h (shared with mexstages/common/mu_gr_mex.c). */
+#include "mu_mex_data.h"
 
 /* ---- state, fixed after boot ---- */
 #define MEX_MAX_COSTUMES 16
@@ -191,6 +67,85 @@ static Fighter_CostumeStrings* mex_retail_strings[MEX_KINDS];
 int mu_mex_active(void)
 {
     return mex != NULL;
+}
+
+/* The disc's codes.gct carries m-ex's joint scale compensation hook (both Akaneia 1.0.1 and ACE
+ * 2.0.0, byte for byte): read by HSD_JObjMakeMatrix (jobj.c) while the mod view is served. */
+int mu_mex_jobj_scale_compensate;
+static int mex_codes_ssc;
+/* The m-ex character select writes the same code list carries (MEX_CSS_* in mu_native.h), read
+ * by mncharsel.c while the mod view is served. */
+int mu_mex_css_codes;
+static int mex_codes_css;
+
+/* One code of a GCT: the first word, and for an 04 write its value. */
+static u32 gct_word(const u8* p)
+{
+    return ((u32) p[0] << 24) | ((u32) p[1] << 16) | ((u32) p[2] << 8) | p[3];
+}
+
+static u32 gct_crc32(const u8* p, u32 n)
+{
+    u32 crc = 0xFFFFFFFFu;
+    u32 i;
+    int k;
+    for (i = 0; i < n; i++) {
+        crc ^= p[i];
+        for (k = 0; k < 8; k++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+/* The hook (run-source/rel09-ace-native/knuckles/f212/REPORT.md): C2 at 0x8036F3FC, 224 bytes
+ * with CRC-32 6C835A38, and the three 04 writes that give the function a 0x60 byte frame. All four
+ * must be there; any other code list leaves the retail matrix. `buf` is scratch the caller owns.
+ * Also fills *css with the character select writes found (MEX_CSS_*):
+ *   04 802609F8 480001C8   CursorThink: the random fighter corners are never tested
+ *   04 804DC49C 41E80000   the cursor's right limit 26.0 becomes 29.0 */
+static int mex_scan_codes(u8* buf, size_t room, int* css)
+{
+    static const struct { u32 addr; u32 value; } writes[3] = {
+        { 0x0436F200u, 0x9421FFA0u }, { 0x0436F4B0u, 0x80010064u }, { 0x0436F4BCu, 0x38210060u },
+    };
+    size_t length, at;
+    int found = 0, hook = 0, i;
+
+    *css = 0;
+    if (DVDConvertPathToEntrynum("codes.gct") < 0) {
+        return 0;
+    }
+    length = lbFileGetSize("codes.gct");
+    if (length < 16 || length > room) {
+        OSReport("[mex] codes.gct is %u bytes (room %u); joint scale compensation not checked\n",
+                 (unsigned) length, (unsigned) room);
+        return 0;
+    }
+    lbFile_8001668C("codes.gct", buf, &length);
+    /* Every code line is 8 bytes on an 8-byte boundary, so the four lines are looked for at each
+     * boundary rather than by walking the code types. */
+    for (at = 8; at + 8 <= length; at += 8) {
+        u32 w0 = gct_word(buf + at), w1 = gct_word(buf + at + 4);
+        if (w0 == 0xC236F3FCu && w1 == 224 / 8 && at + 8 + 224 <= length &&
+            gct_crc32(buf + at + 8, 224) == 0x6C835A38u)
+        {
+            hook = 1;
+        }
+        for (i = 0; i < 3; i++) {
+            if (w0 == writes[i].addr && w1 == writes[i].value) {
+                found |= 1 << i;
+            }
+        }
+        if (w0 == 0x042609F8u && w1 == 0x480001C8u) {
+            *css |= MEX_CSS_NO_RANDOM_CORNERS;
+        }
+        if (w0 == 0x044DC49Cu && w1 == 0x41E80000u) {
+            *css |= MEX_CSS_CURSOR_RIGHT_29;
+        }
+    }
+    memset(buf, 0, length);
+    return hook && found == 7;
 }
 
 static const char* mex_name(int ext)
@@ -359,6 +314,8 @@ void mu_mex_boot(void)
         if (mex != NULL) {
             mex_restore_retail();
             mex = NULL;
+            mu_mex_jobj_scale_compensate = 0;
+            mu_mex_css_codes = 0;
             mu_ak_apply();
             OSReport("[mex] retail view: retail tables\n");
         }
@@ -372,6 +329,8 @@ void mu_mex_boot(void)
         return;
     }
     mex = mex_loaded;
+    mu_mex_jobj_scale_compensate = mex_codes_ssc;
+    mu_mex_css_codes = mex_codes_css;
     mex_widen_costumes();
     mu_ak_apply();
     OSReport("[mex] mod view: m-ex tables again\n");
@@ -428,9 +387,22 @@ static void mex_load(void)
     }
     mex_ext_count = (int) meta->ft_external;
     mex_loaded = mex;
+    {
+        /* codes.gct goes into the free tail of mex_file for the scan and is cleared again. */
+        size_t used = (lbFileGetSize("MxDt.dat") + 31) & ~(size_t) 31;
+        mex_codes_ssc = mex_scan_codes(mex_file + used, sizeof mex_file - used, &mex_codes_css);
+        mu_mex_jobj_scale_compensate = mex_codes_ssc;
+        mu_mex_css_codes = mex_codes_css;
+        OSReport("[mex] codes.gct joint scale compensation hook: %s; select screen: random corners %s, "
+                 "cursor top %s\n", mex_codes_ssc ? "found, native" : "absent",
+                 (mex_codes_css & MEX_CSS_NO_RANDOM_CORNERS) ? "off" : "retail",
+                 (mex_codes_css & MEX_CSS_CURSOR_RIGHT_29) ? "29" : "retail");
+    }
     OSReport("[mex] MxDt.dat %d.%d: %u fighters, %u select icons, %u stages, %u select stage icons, %u songs\n",
              meta->major, meta->minor, (unsigned) meta->ft_external, (unsigned) meta->css_icons,
              (unsigned) meta->gr_external, (unsigned) meta->sss_icons, (unsigned) meta->bgm);
+    /* The stage rows (shim/mu_mex_stage.c): built once from the file, served in the mod view only. */
+    mu_mex_stage_build();
     mex_widen_costumes();
     mu_ak_apply();
 }
@@ -551,6 +523,20 @@ int mu_mex_costume_info(int ckind, int which)
 static u32 mex_be32(const u8* p)
 {
     return (u32) p[0] << 24 | (u32) p[1] << 16 | (u32) p[2] << 8 | p[3];
+}
+
+/* gm_801647F8 as m-ex patches it (+4): the Target Test stage of external character `ext` from
+ * MxDt fighter table 20, a big-endian u16 each (the retail Sheik-to-Zelda remap is skipped).
+ * -1 when no m-ex tables are active or the character has no row. */
+int mu_mex_fighter_target_stage(int ext)
+{
+    const u8* table;
+    if (mex == NULL || ext < 0 || ext >= mex_ext_count ||
+        (table = DP(DP(mex->fighter)->target_stage)) == NULL)
+    {
+        return -1;
+    }
+    return table[2 * ext] << 8 | table[2 * ext + 1];
 }
 
 int mu_mex_fighter_internal_count(void)
@@ -876,3 +862,213 @@ int mu_mex_kirby_effect_file(int mex_internal)
     return bytes[mex_internal];
 }
 #endif
+
+/* ---- the stage tables (run-source/rel09-stages/PLAN.md section 3, items 1 and 2) ----
+ * Raw readers: the values as the disc has them. shim/mu_mex_stage.c builds the native rows from
+ * them; nothing else should read a raw address word. All return "none" in the retail view. */
+
+static MexStage* mex_stage(void)
+{
+    return mex != NULL ? DP(mex->stage) : NULL;
+}
+
+static int mex_stage_ok(int internal)
+{
+    return mex_stage() != NULL && internal >= 0 && internal < (int) DP(mex->metadata)->gr_internal;
+}
+
+int mu_mex_stage_count(void)
+{
+    return mex_stage() != NULL ? (int) DP(mex->metadata)->gr_internal : 0;
+}
+
+int mu_mex_stage_ext_count(void)
+{
+    return mex_stage() != NULL ? (int) DP(mex->metadata)->gr_external : 0;
+}
+
+/* The ext lookup row of external stage id `ext`: {internal id, word, word}. 1 when it exists. */
+int mu_mex_stage_ext(int ext, int words[3])
+{
+    MexStageExt* rows;
+    if (ext < 0 || ext >= mu_mex_stage_ext_count() || (rows = DP(mex_stage()->ext)) == NULL) {
+        return 0;
+    }
+    words[0] = (int) rows[ext].internal;
+    words[1] = (int) rows[ext].x4;
+    words[2] = (int) rows[ext].x8;
+    return 1;
+}
+
+int mu_mex_stage_internal_of_external(int ext)
+{
+    int words[3];
+    return mu_mex_stage_ext(ext, words) ? words[0] : -1;
+}
+
+/* Descriptor row `internal`: the 13 words (word 2, the file name pointer, comes back as 0 and the
+ * name through `file`, NULL when the row has none). 1 when the row exists. */
+int mu_mex_stage_desc(int internal, unsigned int words[13], const char** file)
+{
+    MexGrDescPtr* rows;
+    MexGrDesc* d;
+    if (!mex_stage_ok(internal) || (rows = DP(mex->stage_desc)) == NULL ||
+        (d = DP(rows[internal])) == NULL)
+    {
+        return 0;
+    }
+    words[0] = d->grkind;
+    words[1] = d->map_gobjs;
+    words[2] = 0;
+    words[3] = d->on_init;
+    words[4] = d->on_demo_init;
+    words[5] = d->on_load;
+    words[6] = d->on_start;
+    words[7] = d->callback4;
+    words[8] = d->on_touch_line;
+    words[9] = d->on_check_shadow_render;
+    words[10] = d->flags2;
+    words[11] = d->joints;
+    words[12] = d->joint_count;
+    *file = DP(d->file);
+    return 1;
+}
+
+/* Sound row byte `which` (0 bank, 1 reverb, 2 the third byte), -1 when there is no row. */
+int mu_mex_stage_ssm(int internal, int which)
+{
+    const u8* rows;
+    if (!mex_stage_ok(internal) || which < 0 || which > 2 || (rows = DP(mex_stage()->sound)) == NULL) {
+        return -1;
+    }
+    return rows[3 * internal + which];
+}
+
+/* The raw retail address of the collision table the row names, 0 when none. */
+unsigned int mu_mex_stage_coll(int internal)
+{
+    MexStageColl* rows;
+    if (!mex_stage_ok(internal) || (rows = DP(mex_stage()->coll)) == NULL) {
+        return 0;
+    }
+    return rows[internal].table;
+}
+
+/* Stage item kinds (m-ex numbers, 237 to 252 on both discs). */
+int mu_mex_stage_item_count(int internal)
+{
+    MexItemLookup* rows;
+    if (!mex_stage_ok(internal) || (rows = DP(mex_stage()->items)) == NULL) {
+        return 0;
+    }
+    return DP(rows[internal].ids) != NULL ? (int) rows[internal].count : 0;
+}
+
+int mu_mex_stage_item(int internal, int local)
+{
+    MexItemLookup* rows;
+    const u8* ids;
+    if (local < 0 || local >= mu_mex_stage_item_count(internal) ||
+        (rows = DP(mex_stage()->items)) == NULL || (ids = DP(rows[internal].ids)) == NULL)
+    {
+        return -1;
+    }
+    return ids[2 * local] << 8 | ids[2 * local + 1];
+}
+
+const char* mu_mex_stage_name(int internal)
+{
+    MexStr* names;
+    const char* name;
+    if (!mex_stage_ok(internal) || (names = DP(mex_stage()->names)) == NULL) {
+        return NULL;
+    }
+    name = DP(names[internal]);
+    return name != NULL && name[0] != '\0' ? name : NULL;
+}
+
+/* The playlist of a row: returns its song count (0 when none) and, when `index` is in range,
+ * song `index` and its chance. The song is the disc's signed half word (-1 is the console's error). */
+int mu_mex_stage_playlist(int internal, int index, int* song, int* chance)
+{
+    MexPlaylist* rows;
+    MexPlaylistSong* songs;
+    int count;
+    if (!mex_stage_ok(internal) || (rows = DP(mex_stage()->playlists)) == NULL ||
+        (songs = DP(rows[internal].songs)) == NULL)
+    {
+        return 0;
+    }
+    count = (int) rows[internal].count;
+    if (index >= 0 && index < count) {
+        *song = (s16) songs[index].song;
+        *chance = songs[index].chance;
+    }
+    return count;
+}
+
+/* Stage select icons (0x20 bytes each, raw), for the native select screen; 0 when none. */
+int mu_mex_stage_icon_count(void)
+{
+    return mex != NULL && DP(mex->menu) != NULL && DP(DP(mex->menu)->sss) != NULL
+               ? (int) DP(mex->metadata)->sss_icons
+               : 0;
+}
+
+int mu_mex_stage_icon(int slot, unsigned char out[0x20])
+{
+    const u8* icons;
+    if (slot < 0 || slot >= mu_mex_stage_icon_count()) {
+        return 0;
+    }
+    icons = (const u8*) DP(DP(mex->menu)->sss);
+    memcpy(out, icons + 0x20 * slot, 0x20);
+    return 1;
+}
+
+/* The stage select cursor's start (m-ex mnStageSel_Scene_OnEnter+A04): three big-endian floats at
+ * MxDt menu param +4, (0, -17, 0) on both discs (retail mnStageSel_803B8550 is (0, -13, 0)). */
+int mu_mex_sss_cursor(float out[3])
+{
+    const u8* p;
+    int i;
+    if (mex == NULL || DP(mex->menu) == NULL || (p = (const u8*) DP(DP(mex->menu)->param)) == NULL) {
+        return 0;
+    }
+    for (i = 0; i < 3; i++) {
+        const u32 w = (u32) p[4 + 4 * i] << 24 | (u32) p[5 + 4 * i] << 16 | (u32) p[6 + 4 * i] << 8 |
+                      p[7 + 4 * i];
+        memcpy(&out[i], &w, sizeof w);
+    }
+    return 1;
+}
+
+/* The music table (m-ex lbAudioAx_80023F28+28, +48, +68): MxDt "music" +0 is one file name per
+ * song id, "bgm" songs (Akaneia 1.0.1: 139, ACE 2.0.0: 231; retail 98). */
+int mu_mex_bgm_count(void)
+{
+    return mex != NULL && DP(mex->music) != NULL ? (int) DP(mex->metadata)->bgm : 0;
+}
+
+const char* mu_mex_bgm_file(int id)
+{
+    MexMusic* music;
+    MexStr* files;
+    const char* name;
+    if (id < 0 || id >= mu_mex_bgm_count()) {
+        return NULL;
+    }
+    music = DP(mex->music);
+    if ((files = DP(music->files)) == NULL) {
+        return NULL;
+    }
+    name = DP(files[id]);
+    return name != NULL && name[0] != '\0' ? name : NULL;
+}
+
+/* The mexData root while the mod view is served, NULL otherwise. The native m-ex stage services
+ * (mexstages/common/mu_gr_mex.c) hand stage code its tables, as MEX_GetData does on the console. */
+MexData* mu_mex_root(void)
+{
+    return mex;
+}

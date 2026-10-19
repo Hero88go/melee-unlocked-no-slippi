@@ -3,6 +3,7 @@
 #define NOMINMAX
 #include "cosmetic_mods.h"
 #include "stage_dat_safety.h"
+#include "stage_graft.h"
 
 #include "host.h"
 
@@ -111,9 +112,16 @@ struct RuntimeAsset {
   // A voice bank file only (kind kVoiceKind): the length the file table carries for it. `bytes` is
   // the chosen skin's bank padded to that length, or null while the disc's own bank is served.
   uint32_t length = 0;
+  // A stage skin that does not match the original as it is: what is served while online play or a
+  // replay needs the original's gameplay (its meshes drawn over the original stage, stage_graft.h),
+  // the same length as `bytes`. Offline the skin itself is served. Null for everything else.
+  std::shared_ptr<const std::vector<uint8_t>> online_bytes;
 };
 
 constexpr const char* kVoiceKind = "voice_bank";
+// The online rule a saved stage verdict was made under. 2 (0.9.0): a skin's gameplay values are put
+// back to the original's (stage_safety::restore_gameplay) before it is judged.
+constexpr int kOnlineRule = 2;
 
 // One disc bank file ("audio/us/fox.ssm") that at least one installed skin has a fitting bank for.
 // The candidates are fixed at startup; plan_match_voices picks among them.
@@ -414,7 +422,8 @@ void load_disc_fields(const json& item, AssetRecord* asset) {
     throw std::runtime_error("disc");
   asset->info.variant = item.value("variant", std::string());
   const auto online = item.find("online");
-  if (online != item.end() && online->is_object()) {
+  // A verdict saved under an older online rule is worked out again (kOnlineRule).
+  if (online != item.end() && online->is_object() && online->value("rule", 0) == kOnlineRule) {
     asset->online_known = true;
     asset->online_ok = online->value("ok", false);
     asset->online_note = online->value("note", std::string());
@@ -448,7 +457,7 @@ json catalog_json_locked() {
       item["disc"] = {{"path", asset.disc_path}, {"offset", asset.disc_offset}, {"length", asset.disc_length},
                       {"size", asset.disc_size}, {"mtime", asset.disc_mtime}};
     if (!asset.info.variant.empty()) item["variant"] = asset.info.variant;
-    if (asset.online_known) item["online"] = {{"ok", asset.online_ok}, {"note", asset.online_note}};
+    if (asset.online_known) item["online"] = {{"ok", asset.online_ok}, {"note", asset.online_note}, {"rule", kOnlineRule}};
     item["companions"] = json::array();
     for (const auto& companion : asset.companions) {
       item["companions"].push_back({{"kind", companion.kind},
@@ -1643,7 +1652,45 @@ bool envelopes_bound(const std::vector<uint8_t>& bytes, uint32_t size, const std
   }
   return true;
 }
+// The simulation reads a fighter's bones from its costume file: every joint's rest rotation, scale
+// and translation feeds the bone matrices that hurtboxes, joint-bound hitboxes and the ECB follow
+// wherever an animation does not drive that channel. A skin whose rest pose is within the online
+// check's tolerance but not bit-equal therefore moved hurtboxes on one side of an online match only.
+// After same_tree has matched the two trees joint for joint, this writes the standard file's rest
+// values (the nine floats at joint +0x14) into the skin's copy, so the skin is drawn with its own
+// meshes, materials and textures over bones identical to the standard costume's.
+uint32_t copy_rest_pose(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja, const std::vector<uint32_t>& arel,
+                        std::vector<uint8_t>& b, uint32_t bsize, uint32_t jb, const std::vector<uint32_t>& brel) {
+  struct Pair { uint32_t x, y; };
+  std::vector<Pair> stack{{ja, jb}};
+  uint32_t changed = 0, joints = 0;
+  while (!stack.empty() && joints < 1024) {
+    const Pair top = stack.back(); stack.pop_back();
+    const uint32_t x = top.x, y = top.y;
+    if (x + 0x40ull > asize || y + 0x40ull > bsize) return changed;
+    ++joints;
+    const uint8_t* p = &a[0x20ull + x];
+    uint8_t* q = &b[0x20ull + y];
+    if (std::memcmp(p + 0x14, q + 0x14, 0x24) != 0) { std::memcpy(q + 0x14, p + 0x14, 0x24); ++changed; }
+    if (is_pointer(arel, x + 0x0C) && is_pointer(brel, y + 0x0C)) stack.push_back({be32(p + 0x0C), be32(q + 0x0C)});
+    if (is_pointer(arel, x + 0x08) && is_pointer(brel, y + 0x08)) stack.push_back({be32(p + 0x08), be32(q + 0x08)});
+  }
+  return changed;
+}
 }  // namespace skeleton
+
+// The served copy of an online-allowed costume skin gets the standard costume's joint rest pose
+// (skeleton::copy_rest_pose). Returns how many joints differed; 0 when nothing had to change.
+uint32_t costume_take_standard_bones(const std::vector<uint8_t>& clean, std::vector<uint8_t>& served) {
+  uint32_t asize = 0, aroot = 0, bsize = 0, broot = 0, joints = 0;
+  std::vector<uint32_t> arel, brel;
+  std::string error;
+  if (!skeleton::share_joint_root(clean, &asize, &aroot, &arel, &error) ||
+      !skeleton::share_joint_root(served, &bsize, &broot, &brel, &error)) return 0;
+  if (asize + 0x20ull > clean.size() || bsize + 0x20ull > served.size()) return 0;
+  if (!skeleton::same_tree(clean, asize, aroot, arel, served, bsize, broot, brel, &joints, &error)) return 0;
+  return skeleton::copy_rest_pose(clean, asize, aroot, arel, served, bsize, broot, brel);
+}
 
 }  // namespace
 
@@ -3681,7 +3728,7 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
       asset.info.name = stage_label + ": from " + pack_name + (variant.empty() ? "" : " (" + variant + ")");
       asset.info.variant = variant;
       asset.online_known = true;
-      asset.online_ok = stage_gameplay_matches(retail, bytes, &detail);
+      asset.online_ok = stage_online_form(retail, bytes, nullptr, &detail, stage_path);
       asset.online_note = asset.online_ok ? detail : online_reason_short(detail);
       if (!stage_draw_safe(bytes, &detail)) { asset.online_ok = false; asset.online_note = online_reason_short(detail); }
       asset.info.kind = "stage_visual";
@@ -4988,16 +5035,47 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
     for (FstFile* target : targets) {
       FstFile& disc_file = *target;
       std::vector<uint8_t> served = bytes;   // per disc file: the online rule and the length below are per file
+      std::vector<uint8_t> online_form;      // a stage skin's online form, when it differs from `served`
       bool online_allowed = true;
       std::string online_reason;   // kept for the Mods tab: the verdict is never only in the log
       if (asset->info.kind == "stage_visual") {
         std::vector<uint8_t> clean(disc_file.size);
         std::string validation_error;
+        // A skin that does not match the original as it is: offline it is served as it is, and
+        // online (and in replays) its meshes drawn over the original stage (stage_online_form). The
+        // two are given one length, the longer one's, since the game is told one length per file.
         online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
-                         stage_gameplay_matches(clean, served, &validation_error);
+                         stage_online_form(clean, served, &online_form, &validation_error, disc_file.path);
+        if (online_allowed && !online_form.empty()) {
+          const size_t extent = std::max(served.size(), online_form.size());
+          if (extent > std::numeric_limits<uint32_t>::max() || served.size() < 4 || online_form.size() < 4) {
+            online_allowed = false; online_form.clear();
+          } else {
+            served.resize(extent, 0); put_be32(served.data(), (uint32_t)extent);
+            online_form.resize(extent, 0); put_be32(online_form.data(), (uint32_t)extent);
+          }
+        }
         host::log("cosmetics: stage %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
         online_reason = online_allowed ? validation_error : online_reason_short(validation_error);
+      }
+      // Effect files hold the particle generators, and particles draw from the game's own random
+      // number seed (generator.c, particle.c call HSD_Randf), so an effect file that emits a
+      // different number of particles changes everything random after it: online that is a desync.
+      // Online an effect stays only when it changes textures alone, or is the composed Fox/Falco
+      // particle-colour change (colour values only, the same commands); otherwise the disc's file.
+      if (asset->info.kind == "effect_visual") {
+        std::vector<uint8_t> clean(disc_file.size);
+        std::string validation_error;
+        const std::string name = lower(disc_file.path);
+        const bool colour_only = name.find("plfx.dat") != std::string::npos || name.find("plfc.dat") != std::string::npos;
+        online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
+                         (colour_only || visual_dat_only(clean, served, &validation_error));
+        if (online_allowed && colour_only) validation_error = "particle colours only";
+        else if (online_allowed) validation_error = "textures only";
+        host::log("cosmetics: effect %s %s online (%s)", disc_file.path.c_str(),
+                  online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
+        online_reason = online_allowed ? validation_error : "changes more than textures";
       }
       if (asset->info.kind == "character_costume") {
         std::vector<uint8_t> clean(disc_file.size);
@@ -5007,6 +5085,11 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
         host::log("cosmetics: costume %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
         online_reason = online_reason_short(validation_error);
+        // The skin is drawn; the bones the game simulates with are the standard costume's.
+        if (online_allowed)
+          if (const uint32_t moved = costume_take_standard_bones(clean, served))
+            host::log("cosmetics: costume %s: %u joints take the standard costume's rest pose (the skin's differed)",
+                      disc_file.path.c_str(), moved);
       }
       if (!online_allowed) {
         // This file is the override offline and the disc's own file online, and the game sees one
@@ -5024,6 +5107,7 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
       RuntimeAsset active{asset->info.id, asset->info.target_path,
                           std::make_shared<const std::vector<uint8_t>>(std::move(served)),
                           disc_file.size, online_allowed, asset->info.kind, std::move(online_reason)};
+      if (!online_form.empty()) active.online_bytes = std::make_shared<const std::vector<uint8_t>>(std::move(online_form));
       next->by_start[disc_file.start] = std::move(active);
       host::log("cosmetics: %s -> %s at %08X (%u vanilla bytes, %zu override bytes)",
                 asset->info.name.c_str(), disc_file.path.c_str(), disc_file.start, disc_file.size,
@@ -5423,6 +5507,38 @@ bool stage_gameplay_matches(const std::vector<uint8_t>& clean, const std::vector
   return stage_safety::matches(clean, candidate, detail);
 }
 
+bool stage_online_form(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& skin,
+                       std::vector<uint8_t>* online, std::string* detail, const std::string& stage_file) {
+  std::string local;
+  if (!detail) detail = &local;
+  if (stage_gameplay_matches(clean, skin, detail)) { if (online) online->clear(); return true; }
+  const std::string as_is = *detail;
+  std::string note;
+  // The skin's gameplay values put back to the original's (stage_safety::restore_gameplay): a skin
+  // that only changed values (20XX's stage files set a music table the original leaves empty) is then
+  // the skin itself with the original's gameplay, and one that also changed models is grafted from
+  // that repaired copy below.
+  std::vector<uint8_t> restored;
+  if (stage_safety::restore_gameplay(clean, skin, &restored, &note)) {
+    if (stage_draw_safe(restored, &note)) {
+      *detail = "the skin with the original stage's gameplay values";
+      if (online) *online = std::move(restored);
+      return true;
+    }
+    restored.clear();
+  }
+  const std::vector<uint8_t>& base = restored.empty() ? skin : restored;
+  std::vector<uint8_t> grafted;
+  if (!stage_safety::graft_visuals(clean, base, &grafted, &note, stage_safety::visual_only_models(stage_file))) {
+    *detail = as_is + "; " + note;
+    return false;
+  }
+  if (!stage_draw_safe(grafted, &note)) { *detail = as_is + "; drawn over the original: " + note; return false; }
+  *detail = "drawn over the original stage's gameplay (" + note + ")";
+  if (online) *online = std::move(grafted);
+  return true;
+}
+
 bool random_stage_skins() {
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_profile.random_stage_skins;
@@ -5521,7 +5637,7 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
       bool allowed = true;
       if (online_active())
         for (const auto& original : originals)
-          if (!stage_gameplay_matches(original, bytes, &error)) { allowed = false; break; }
+          if (!stage_online_form(original, bytes, nullptr, &error, target)) { allowed = false; break; }
       if (allowed) eligible.push_back(asset.info.id);
     }
   }
@@ -5671,7 +5787,7 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
       ((uint8_t*)dst)[at - file_offset] = length_field[at];
     return OverrideRead::Success;
   }
-  const auto& bytes = *found->second.bytes;
+  const auto& bytes = found->second.online_bytes && online_active() ? *found->second.online_bytes : *found->second.bytes;
   uint64_t begin = file_offset, end = begin + size;
   if (end < begin || begin > bytes.size()) return OverrideRead::Failed;
   if (end > bytes.size() && end - bytes.size() > 31) return OverrideRead::Failed;
@@ -5689,6 +5805,10 @@ std::atomic<OnlineProbe> g_online_probe{nullptr};
 void set_online_probe(OnlineProbe probe) { g_online_probe.store(probe); }
 bool online_active() {
   if (g_online_freezes.load(std::memory_order_relaxed)) return true;
+  // MELEE_TEST_ONLINE_FORMS (tests only, hidden runs): stage skins are served in their online form
+  // offline too, so a capture shows what an online opponent's game draws.
+  static const bool test_forms = std::getenv("MELEE_TEST_ONLINE_FORMS") && std::getenv("MELEE_NO_GC_ADAPTER");
+  if (test_forms) return true;
   const OnlineProbe probe = g_online_probe.load();
   return probe && probe();
 }

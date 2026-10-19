@@ -202,6 +202,9 @@ struct Frame {
   // an older state and simulated forward again. The two frames are not neighbours in time, so
   // nothing may be blended between them (see mark_discontinuity).
   bool discontinuous = false;
+  // Display latency test (set_latency_test): -1 the picture as drawn, 0 all black, 1 all white. Decided
+  // from the pads the game read for this frame, so a photodiode times the same input-to-photon path.
+  int8_t test_fill = -1;
   // Reserve enough storage for an ordinary match before the first large scene is decoded. DrawCall
   // is about 5 KB, so a vector growth during a Stadium transformation can otherwise copy several
   // megabytes on the simulation thread and miss a 16.7 ms frame. Recycled frames retain this memory.
@@ -218,8 +221,17 @@ struct Frame {
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; }
+  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; test_fill = -1; }
 };
+
+// Display latency test for photodiode testers that press X + D-pad Down (LDAT, pico lag testers;
+// the Lossless adapter's test is the separate lag test launch, shim/mu_lagtest.c): while on, X + D-pad Down on any controller turns the picture all black, then switches it
+// between black and white with each press; X + D-pad Up gives the picture back. Visual only: the game
+// never sees it, so it is the same online. presented_test_fill is the fill of the frame a backend is
+// drawing now (set in submit_frame), read by the overlay that paints it.
+void set_latency_test(bool on);
+void set_presented_test_fill(int fill);
+int presented_test_fill();
 
 // The panel publishes visual-only HUD controls to the simulation thread.
 void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks);
@@ -338,9 +350,26 @@ struct Backend {
   virtual std::string profile_line() const { return {}; }
   virtual void set_present_deadline(double) {}
   virtual double presentation_wait_seconds() const { return 0; }
+  // NVIDIA Reflex pacing for the threaded renderer: reflex_pacing(cap_hz) applies Reflex's own frame
+  // limit (cap_hz, 0 = none) and says whether Reflex holds the frame rate; reflex_sleep() is then
+  // called once at the start of each presented frame, before its moment in time is chosen.
+  virtual bool reflex_pacing(double) { return false; }
+  virtual void reflex_sleep() {}
   // What the display side reported since the last call (D3D12: DXGI frame statistics), for the
   // "pacing:" line. Called on the render thread.
   virtual std::string display_timing_line() { return "display statistics not available"; }
+  // Whether the display follows the frames (G-Sync, FreeSync): 1 it does, 0 it refreshes at a fixed
+  // rate, -1 not known (Windows composes the window, or nothing measured yet). Judged from the
+  // display's own counts while frames come slower than the refresh: a fixed display still refreshes
+  // at its full rate and repeats frames, a variable one refreshes once per frame. Render thread.
+  virtual int variable_refresh() const { return -1; }
+  // The display's counts could be read at the last look (false while Windows composes the window).
+  virtual bool display_counts_readable() const { return false; }
+  // From the presentation loop, every frame: the monitor's nominal refresh rate (what the verdict
+  // above is judged against), and whether to present synced even with V-Sync off. The loop asks for
+  // that on a display that follows the frames, where it costs no delay while the rate stays under
+  // the refresh, and stops every tear.
+  virtual void set_display_refresh(double /*hz*/, bool /*tear_free*/) {}
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
   // Queueing backends take the frame's buffers and hand back recycled ones (no copy, no
   // per-frame reallocation on the simulation thread); `frame` comes back cleared either way.

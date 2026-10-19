@@ -450,6 +450,7 @@ enum : uint16_t {
 };
 
 KeyBindings g_key_bindings = default_key_bindings();
+int g_stick_modifier_percent = 50;
 std::array<PadBindings, 4> g_pad_bindings = default_pad_bindings();
 std::array<GCBindings, 4> g_gc_bindings = default_gc_bindings();
 std::array<PadBindings, 4> g_ds4_bindings = {};
@@ -687,9 +688,10 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     uint32_t mask = hidpad_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(mask & (1u << idx)) || !wanted(CaptureDevice::HidPad, idx)) continue;
-      // Bit 31 is left out: the capture result travels as an int, and a mask with the top bit set
-      // would arrive negative. Thirty-one buttons is more than any box controller has.
-      uint32_t newly = buttons[idx] & ~g_capture_hid_baseline[idx] & 0x7FFFFFFFu;
+      // Bit 31 is the hat's Left (HID_HAT_LEFT), so it must be capturable: leaving it out made
+      // D-pad Left unbindable on every box controller that reports its D-pad as a hat. The result
+      // travels as an int and is negative for that bit; binding_set takes it back as uint32_t.
+      uint32_t newly = buttons[idx] & ~g_capture_hid_baseline[idx];
       if (newly) {
         uint32_t lowest = newly & ~(newly - 1);
         g_capturing.store(false); device = CaptureDevice::HidPad; value = (int)lowest; device_index = idx; return true;
@@ -739,7 +741,7 @@ static uint32_t g_match_rt_start = 0, g_match_rt_last = 0;
 // The L/R shoulders are digital on this pad, so a press bottoms the analog trigger out the way a
 // digital press does on hardware: Melee shields from the trigger value, not from the L/R bit.
 // Thirty-two bits back: the two travel actions sit above bit 16.
-uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
+uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad, box::State& box_state) {
   const HidBindings& bind = g_hid_bindings[idx];
   // The device's own trigger axes, when it has them, are already in trig_l/trig_r and pass through
   // (they have no source bit to bind); a button on L analog or R analog presses on top of them.
@@ -750,6 +752,11 @@ uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
   // the device has one.
   if (pad.button & kActionPadBit[(size_t)BindAction::L] && !pad.trig_l) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R] && !pad.trig_r) pad.trig_r = 255;
+  // Stick directions bound to buttons: with Mod X or Mod Y bound the box coordinates, otherwise full
+  // pushes, as on the keyboard. They were saved but never applied here, so a box sending its stick
+  // as buttons moved nothing. A device's own analog stick is left alone while none is held.
+  if (!apply_box_actions(bind.mask[(size_t)BindAction::ModX] || bind.mask[(size_t)BindAction::ModY], actions, pad, box_state))
+    apply_stick_actions(actions, pad.stick_x, pad.stick_y, g_stick_modifier_percent);
   return actions;
 }
 
@@ -780,7 +787,10 @@ void apply_known_box_layout(int idx) {
   if (lower.find("vjoy") != std::string::npos) {
     g_hid_bindings[idx] = vjoy_b0xx_bindings();
     host::log("hid pad %d: %s, using the B0XX (vJoy) layout", idx + 1, name.c_str());
-  } else if (lower.find("leonardo") != std::string::npos || lower.find("haybox") != std::string::npos) {
+  } else if (lower.find("leonardo") != std::string::npos || lower.find("haybox") != std::string::npos ||
+             hidpad_haybox_dinput(idx)) {
+    // By name for the Arduino-based boxes; by descriptor for the Pico-based ones (a Frame1, say),
+    // which carry no name of their own.
     g_hid_bindings[idx] = haybox_dinput_bindings();
     host::log("hid pad %d: %s, using the B0XX-layout box (HayBox DInput) layout", idx + 1, name.c_str());
   } else if (std::memcmp(&g_hid_bindings[idx], &before_hat, sizeof before_hat) == 0) {
@@ -794,14 +804,21 @@ void apply_known_box_layout(int idx) {
 // input_debug_snapshot) go through the same function, so the game and the Controls tab agree.
 
 // The keyboard: every key is a button, and a key on L or R bottoms the trigger out with its click.
-template <class Key> uint32_t keyboard_apply_bindings(PadState& kb, Key key) {
+template <class Key> uint32_t keyboard_apply_bindings(PadState& kb, Key key, box::State& box_state) {
   const uint32_t actions = button_apply_bindings(kb, 0, 0,
       [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); }, [](int i) { return (int)g_key_bindings.level[i]; });
-  apply_stick_actions(actions, kb.stick_x, kb.stick_y);
+  apply_stick_actions(actions, kb.stick_x, kb.stick_y, g_stick_modifier_percent);
   if (kb.button & PAD_L) kb.trig_l = 255;
   if (kb.button & PAD_R) kb.trig_r = 255;
+  // Mod X or Mod Y bound: the keyboard is a box, and its stick and C-stick take the box coordinates.
+  apply_box_actions(g_key_bindings.vk[(size_t)BindAction::ModX] || g_key_bindings.vk[(size_t)BindAction::ModY],
+                    actions, kb, box_state);
   return actions;
 }
+// The opposing-direction rule of box mode remembers the last poll, so the game's read and the
+// Controls tab's preview each keep their own: [0] input_poll, [1] input_debug_snapshot.
+box::State g_box_keyboard[2];
+box::State g_box_hid[2][4];
 
 void apply_family_options(PadFamily family, PadState& pad) {
   const Deadzone& dz = g_deadzones[(size_t)family];
@@ -1090,7 +1107,7 @@ void input_poll(PadState out[4]) {
       if (live && vk >= 8 && vk != VK_TAB) return (GetAsyncKeyState(vk) & 0x8000) != 0;
       return g_keys[vk];
     };
-    keyboard_actions = keyboard_apply_bindings(kb, key);
+    keyboard_actions = keyboard_apply_bindings(kb, key, g_box_keyboard[0]);
   }
 
   PadState xin[4];
@@ -1103,7 +1120,7 @@ void input_poll(PadState out[4]) {
     debug.xinput_connected[idx] = true;
     x.err = 0;
     auto& g = xs.Gamepad;
-    auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
+    auto axis = [](SHORT v) { return (int)xinput_axis(v); };
     // No deadzone and no trigger floor, as in Dolphin. These used Microsoft's recommended Xbox
     // deadzone, which zeroed both axes whenever both sat inside about 30 of Melee's 80 units: larger
     // than the game's own deadzone, and exactly where a box controller in XInput mode puts some of its
@@ -1157,7 +1174,7 @@ void input_poll(PadState out[4]) {
       apply_known_box_layout(idx);
       hid_connected[idx] = true;
       debug.hid_connected[idx] = true;
-      debug.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx]);
+      debug.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx], g_box_hid[0][idx]);
     }
   }
 
@@ -1219,6 +1236,21 @@ void input_poll(PadState out[4]) {
     for (int port = 0; port < 4; ++port)
       if (out[port].err == 0) { const auto err = out[port].err; out[port] = {}; out[port].err = err; debug.ports[port] = out[port]; }
   { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int port = 0; port < 4; ++port) g_last_pads[port] = out[port]; }
+  // MELEE_TEST_PAD_TRACE=<file> (tests only, hidden runs): one line each time a port's input changes,
+  // as the game will read it, so a test that drives a controller can check every press arrived.
+  if (options.no_gc_adapter) {
+    static FILE* trace = [] { const char* p = std::getenv("MELEE_TEST_PAD_TRACE"); return p && *p ? std::fopen(p, "w") : nullptr; }();
+    static PadState last[4] = {};
+    if (trace)
+      for (int port = 0; port < 4; ++port) {
+        const PadState& p = out[port];
+        if (!std::memcmp(&p, &last[port], sizeof p)) continue;
+        last[port] = p;
+        std::fprintf(trace, "%u port %d err %d button %04X stick %d %d cstick %d %d trig %u %u\n", retrace_count(), port + 1,
+                     p.err, p.button, p.stick_x, p.stick_y, p.sub_x, p.sub_y, p.trig_l, p.trig_r);
+        std::fflush(trace);
+      }
+  }
 
   debug.keyboard_actions = keyboard_actions;
   for (int idx = 0; idx < 4; ++idx) if (xin_connected[idx]) debug.xinput_connected[idx] = true;
@@ -1357,7 +1389,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   {
     std::lock_guard<std::mutex> lock(g_keys_mutex);
     auto key = [](int vk) { return g_keys[vk & 0xFF]; };
-    snapshot.keyboard_actions = keyboard_apply_bindings(kb, key);
+    snapshot.keyboard_actions = keyboard_apply_bindings(kb, key, g_box_keyboard[1]);
   }
 
   PadState xin[4];
@@ -1368,7 +1400,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     snapshot.xinput_connected[idx] = true;
     xin[idx].err = 0;
     auto& g = xs.Gamepad;
-    auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
+    auto axis = [](SHORT v) { return (int)xinput_axis(v); };
     // Same reading as input_poll: no deadzone, no trigger floor.
     const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     xin[idx].stick_x = (int8_t)sx; xin[idx].stick_y = (int8_t)sy; xin[idx].sub_x = (int8_t)cx; xin[idx].sub_y = (int8_t)cy;
@@ -1412,7 +1444,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     for (int idx = 0; idx < 4; ++idx) {
       if (!(hid_mask & (1u << idx))) { hid[idx] = {}; hid[idx].err = -1; continue; }
       snapshot.hid_connected[idx] = true;
-      snapshot.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx]);
+      snapshot.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx], g_box_hid[1][idx]);
     }
   }
 

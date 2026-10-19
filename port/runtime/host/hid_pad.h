@@ -53,6 +53,23 @@ inline bool dualsense_pad(unsigned long vendor, unsigned long product) {
 constexpr int8_t kTriggerRestMin = 0, kTriggerRestCentre = 1, kTriggerRestMax = 2;
 int8_t hid_trigger_rest(long logical_min, long logical_max, long raw);
 uint8_t hid_trigger_value(long logical_min, long logical_max, long raw, int8_t rest);
+// A stick axis as the reader turns it into the pad's signed value (floored, no deadzone), for tests.
+int8_t hid_axis_signed(long logical_min, long logical_max, long raw, bool flip = false);
+
+// HayBox in its DInput mode, the firmware of the Frame1 and many other box controllers, describes six
+// 16-bit axes (X, Y, Z, Rz, Rx, Ry), a hat and buttons 1-16, and publishes no name of its own (on a
+// Pico it is just "Pico"), so the descriptor is how it is recognised. Its C-stick is Rx/Ry, its
+// triggers are Z (left) and Rz (right), and its buttons follow HayBox_DInput.ini. The generic reader
+// took Z as the right trigger and never read Rz, so its L pressed both shields and R none.
+// `axes` is in the reader's order: X, Y, Z, Rx, Ry, Rz, Slider, Hat.
+struct HidAxisRange { bool present = false; long logical_min = 0, logical_max = 0; };
+inline bool haybox_dinput_shape(const HidAxisRange (&axes)[8], unsigned button_min, unsigned button_max) {
+  for (int i = 0; i < 6; ++i)
+    if (!axes[i].present || axes[i].logical_min != 0 || axes[i].logical_max != 0xFFFF) return false;
+  return !axes[6].present && axes[7].present && button_min == 1 && button_max == 16;
+}
+// Whether the device in a slot has that shape.
+bool hidpad_haybox_dinput(int slot);
 
 // What to call the device in a slot, for the Controls tab. Empty when the slot is unused.
 std::string hidpad_name(int slot);

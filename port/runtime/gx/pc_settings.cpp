@@ -27,6 +27,7 @@
 #else
 #include "jukebox.h"
 #include "slippi_online.h"
+#include "slippi_spectate.h"
 #include "native_practice.h"
 #endif
 #include "window.h"
@@ -37,6 +38,7 @@
 #include "lcancel.h"
 #include "../abi/mu_lcancel_flash.h"
 #include "user_gecko.h"
+#include "lag_test_codes.h"
 #include "gecko_data.h"
 #include "hid_pad.h"
 #include "updater.h"
@@ -296,14 +298,20 @@ static const char* kActionNames[(size_t)host::BindAction::Count] = {
   "SUp", "SDown", "SLeft", "SRight",
   // Added when L and R were split into the click and the travel. A file without these lines is an
   // older one, whose single L / R bindings are carried over (see split_old_trigger_bindings).
-  "LAnalog", "RAnalog"
+  "LAnalog", "RAnalog",
+  // Added with the box controller buttons. A file without them has none bound: no box mode.
+  "ModX", "ModY", "LightShield", "MidShield",
+  // Added with the stick modifier (Dolphin's Modifier). A file without it has none bound.
+  "StickMod"
 };
 // The same, as the controls picture writes them.
 static const char* kActionTitles[(size_t)host::BindAction::Count] = {
   "A", "B", "X", "Y", "Z", "Start", "L", "R", "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
   "C Up", "C Down", "C Left", "C Right",
   "Stick Up", "Stick Down", "Stick Left", "Stick Right",
-  "L analog", "R analog"
+  "L analog", "R analog",
+  "Mod X", "Mod Y", "Light shield", "Mid shield",
+  "Stick modifier"
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
@@ -348,6 +356,7 @@ static host::PortSource combo_to_port_source(int idx) {
 static const char* kFamilyKeys[(size_t)host::PadFamily::Count] = {"gamecube", "xbox", "playstation", "switch", "box"};
 
 static bool load_family_option(const std::string& key, const std::string& value) {
+  if (key == "stick_modifier_percent") { host::g_stick_modifier_percent = std::clamp(std::atoi(value.c_str()), 10, 100); return true; }
   for (int f = 0; f < (int)host::PadFamily::Count; ++f) {
     const std::string k = kFamilyKeys[f];
     if (key == "deadzone_" + k + "_main") { host::g_deadzones[f].main = std::clamp(std::atoi(value.c_str()), 0, 100); return true; }
@@ -371,6 +380,8 @@ static bool load_family_option(const std::string& key, const std::string& value)
 
 static std::string family_options_text() {
   std::string out;
+  // written only when changed, so a file that never used it stays as it was
+  if (host::g_stick_modifier_percent != 50) out += "\nstick_modifier_percent " + std::to_string(host::g_stick_modifier_percent);
   for (int f = 0; f < (int)host::PadFamily::Count; ++f) {
     const std::string k = kFamilyKeys[f];
     out += "\ndeadzone_" + k + "_main " + std::to_string(host::g_deadzones[f].main);
@@ -957,6 +968,7 @@ struct CustomPreset { bool set = false; int efb = 0, ssaa = 1, aniso = 16, dlss 
 static CustomPreset g_custom_preset;
 // The panel has saved which user Gecko codes are on (until then GeckoCodes.ini's own list is used).
 static bool g_gecko_chosen = false;
+static std::vector<std::string> g_gecko_saved_on;   // the player's own choice, kept through a lag test
 
 // "+ Add Gecko code": paste in a code without finding and editing GeckoCodes.ini by hand. A pasted
 // block may carry its own "$Name" line (Dolphin's format, what most sites hand out); if it does, that
@@ -1155,7 +1167,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
 struct GcCallout { int action; float x, y, w; };
 // The keyboard has two rows of direction boxes under the pad: the C-stick, and the control stick
 // (added once the stick stopped being hard wired to the arrow keys).
-constexpr float kGcCanvasHKeys = 434, kGcCanvasHAnalog = 350;
+constexpr float kGcCanvasHKeys = 476, kGcCanvasHAnalog = 350;   // keys: a third row for the box buttons
 enum { kCStickModeBox = 100 };   // the single C-stick box of an analog controller: shows and toggles the mode
 
 // The deadzone as the settings picture shows it: an orange ring sized to the deadzone, and a dot at
@@ -1354,6 +1366,12 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     // feeds it directly and has nothing to bind here.
     boxes.push_back({(int)A::SUp, 216, 392, 128}); boxes.push_back({(int)A::SDown, 352, 392, 128});
     boxes.push_back({(int)A::SLeft, 488, 392, 128}); boxes.push_back({(int)A::SRight, 624, 392, 128});
+    // Third row: a box controller's own buttons. Binding Mod X or Mod Y turns the two rows above
+    // into the box's Melee coordinates (input_bindings.h, apply_box_actions).
+    boxes.push_back({(int)A::ModX, 216, 434, 128}); boxes.push_back({(int)A::ModY, 352, 434, 128});
+    boxes.push_back({(int)A::LightShield, 488, 434, 128}); boxes.push_back({(int)A::MidShield, 624, 434, 128});
+    // The stick modifier (Dolphin's Modifier): held, the button-made stick pushes part of the way.
+    boxes.push_back({(int)A::StickMod, 760, 434, 128});
   }
   constexpr float kBoxH = 32;
   // Grey group panels behind the boxes.
@@ -1388,6 +1406,9 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     if (action == kCStickModeBox || (action >= (int)A::CUp && action <= (int)A::CRight)) return ImVec2(cst_c.x, cst_c.y + 37 * kc);
     // The control stick's own boxes point at the stick, not the C-stick.
     if (action >= (int)A::SUp && action <= (int)A::SRight) return ImVec2(stick.x, stick.y + 37 * kc);
+    // Mod X and Mod Y shape the control stick; the shield buttons press R.
+    if (action == (int)A::ModX || action == (int)A::ModY || action == (int)A::StickMod) return ImVec2(stick.x, stick.y + 37 * kc);
+    if (action == (int)A::LightShield || action == (int)A::MidShield) return C(790, 160);
     return C(476, 344);   // the D-pad arms: the diamond's left corner
   };
   auto outline_part = [&](int action, ImU32 col, float th) {
@@ -1478,6 +1499,10 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
       case (int)A::LAnalog: t = "La"; break;
       case (int)A::RAnalog: t = "Ra"; break;
       case (int)A::Start: t = "S"; break;
+      case (int)A::ModX: bg = IM_COL32(110, 110, 120, 255); t = "MX"; break;
+      case (int)A::ModY: bg = IM_COL32(110, 110, 120, 255); t = "MY"; break;
+      case (int)A::LightShield: t = "LS"; break;
+      case (int)A::MidShield: t = "MS"; break;
       default: break;
     }
     const bool is_c = action == kCStickModeBox || (action >= (int)A::CUp && action <= (int)A::CRight);
@@ -1934,6 +1959,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
+#ifndef MELEE_NO_SLIPPI   // the spectator server is part of the Slippi layer
+  options.slippi_spectator = true;   // a file without the key: on, as in Slippi Dolphin
+  options.slippi_spectator_port = 51441;
+#endif
   options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;   // files without the keys: off
   options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
   options.mod_choices.clear();
@@ -2074,6 +2103,11 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
+#ifndef MELEE_NO_SLIPPI
+      else if (key == "slippi_spectator") options.slippi_spectator = value != "0";
+      else if (key == "online_return_training") options.online_return_training = value == "1";
+      else if (key == "slippi_spectator_port") options.slippi_spectator_port = std::clamp(std::atoi(value.c_str()), 1, 65535);
+#endif
       else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_getup") options.cpu_getup = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_di") options.cpu_di = std::clamp(std::atoi(value.c_str()), 0, 3);
@@ -2106,6 +2140,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "reflex") options.reflex_mode = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
+      else if (key == "latencytest") options.latency_test = value == "1";
+      else if (key == "losslesslagtest") options.lossless_lag_test = value == "1";
       else if (key == "pathtracing")
         options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
       else if (key == "rayreconstruction")
@@ -2245,8 +2281,21 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // The player's Gecko codes live beside the settings file.
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
   user_gecko::set_code_patches_allowed(!options.native_source);   // the Static Recomp can run a patched function from RAM
-  user_gecko::load(codes.string(), gecko_on, gecko_chosen);
+  if (options.lossless_lag_test || std::getenv("MELEE_LAG_TEST")) {
+    // The Lossless adapter's lag test: the codes its app gives Dolphin, in place of the player's own
+    // (the player's video settings stay, since they are what is measured). The Source Port does the
+    // same natively and loads none.
+    codes = std::filesystem::path(options.settings_path).parent_path() / "LagTestGeckoCodes.ini";
+    if (!options.native_source) {
+      if (FILE* f = _wfopen(codes.wstring().c_str(), L"wb")) { std::fputs(lag_test::kGeckoCodesIni, f); std::fclose(f); }
+      user_gecko::load(codes.string(), {}, false);
+      host::log("lag test: the Lossless adapter's lag test codes are on (%s)", codes.u8string().c_str());
+    }
+  } else {
+    user_gecko::load(codes.string(), gecko_on, gecko_chosen);
+  }
   g_gecko_chosen = gecko_chosen;
+  g_gecko_saved_on = gecko_on;
   source_port::mods::set_choices(options.mod_choices);
   std::sort(texture_packs_off.begin(), texture_packs_off.end());
   texture_packs_off.erase(std::unique(texture_packs_off.begin(), texture_packs_off.end()), texture_packs_off.end());
@@ -2263,6 +2312,11 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
+#ifndef MELEE_NO_SLIPPI
+  RenderOptions::live_slippi_spectator() = options.slippi_spectator;
+  RenderOptions::live_slippi_spectator_port() = options.slippi_spectator_port;
+  RenderOptions::live_online_return_training() = options.online_return_training;
+#endif
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
   // Explicit new choices win over legacy keys regardless of their order in the file. A legacy
@@ -3283,6 +3337,8 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nfgmax " << options.fg_cached_max << "\nfgdynamic " << (options.fg_cached_dynamic ? 1 : 0)
        << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
        << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
+       << "\nlatencytest " << (options.latency_test ? 1 : 0)
+       << "\nlosslesslagtest " << (options.lossless_lag_test ? 1 : 0)
        << "\npathtracing " << (options.path_tracing ? 1 : 0)
        << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
 #ifdef GX_DLSS5
@@ -3360,6 +3416,11 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\nresults_screen " << (options.results_screen ? 1 : 0)
+#ifndef MELEE_NO_SLIPPI
+       << "\nslippi_spectator " << (options.slippi_spectator ? 1 : 0)
+       << "\nslippi_spectator_port " << options.slippi_spectator_port
+       << "\nonline_return_training " << (options.online_return_training ? 1 : 0)
+#endif
        << "\ncpu_tech " << options.cpu_tech
        << "\ncpu_getup " << options.cpu_getup
        << "\ncpu_di " << options.cpu_di
@@ -3398,8 +3459,12 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
   // The player's Gecko codes switched on, by name (names can hold spaces; read to end of line).
   if (g_gecko_chosen) {
     file << "\ngeckochosen 1";
-    for (const user_gecko::Code& c : user_gecko::codes())
-      if (c.enabled) file << "\ngeckocode " << c.name;
+    if (std::getenv("MELEE_LAG_TEST")) {   // the lag test's codes are not the player's: keep theirs
+      for (const std::string& name : g_gecko_saved_on) file << "\ngeckocode " << name;
+    } else {
+      for (const user_gecko::Code& c : user_gecko::codes())
+        if (c.enabled) file << "\ngeckocode " << c.name;
+    }
   }
   for (int i = 0; i < (int)host::BindAction::Count; ++i)
     file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
@@ -3923,7 +3988,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     state.saved = write_settings_file(state, options);
     if (state.saved) state.mod_choices_seen = version;
   }
-  // F2: write the next ~90 presented frames into capture\. For defects that only show in a real
+  // Ctrl+F2: write the next ~90 presented frames into capture\. For defects that only show in a real
   // session, where scripted runs reproduce nothing: press it while the problem is happening and
   // the frames themselves can be read afterwards.
   // 20XX TE: the game chose a menu song in Sound Test. Saved now, like TE saves it.
@@ -4008,7 +4073,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     te_linked_before = linked;
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
+  // Ctrl+F2 (F2 alone was hit by accident next to F1, and writing 90 frames to disk drops the game
+  // to about 20 frames a second while it runs).
+  if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && ImGui::GetIO().KeyCtrl) { request_frame_capture(90); host::log("capture: Ctrl+F2, writing the next 90 presented frames into capture\\"); }
   // F3: Lab view on or off. Marked dirty, so it is saved with the other settings the next time the
   // panel is open (the panel is what writes the settings file).
   // The Lab view draws from the Slippi frame data the translated guest sends; the Source Port has
@@ -4624,12 +4691,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       const Preset presets[] = {
         {"Low", "For laptops and integrated graphics: native resolution, no anti-aliasing,\n60 frames per second, no sub-frame animation.", 1, 1, 1, 0, 60, SubFrameMode::Off, false},
         {"Medium", "For most older PCs: 2x resolution, 4x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 2, 1, 4, 0, -1, SubFrameMode::Authored, false},
-        {"High", "Recommended, and the default: resolution matched to your window, 16x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 0, 1, 16, 0, -1, SubFrameMode::Authored, false},
+        // 4x filtering since 0.9.0: a player found 16x, the old default, made play less smooth.
+        {"High", "Recommended, and the default: resolution matched to your window, 4x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 0, 1, 4, 0, -1, SubFrameMode::Authored, false},
         // DLAA already smooths every edge, so Ultra uses it alone where it exists. Stacked on 4x
         // supersampling it ran DLAA over an image several times 4K: a large drop in frame rate, and
         // out of video memory on 8 GB cards once a recorder was running too.
-        {"Ultra", dlaa_ok ? "High, plus NVIDIA DLAA for the smoothest edges."
-                          : "High, plus 4x supersampling for the smoothest edges.",
+        {"Ultra", dlaa_ok ? "High with 16x filtering, plus NVIDIA DLAA for the smoothest edges."
+                          : "High with 16x filtering, plus 4x supersampling for the smoothest edges.",
          0, dlaa_ok ? 1 : 2, 16, dlaa_ok ? 1 : 0, -1, SubFrameMode::Authored, false},
 #ifdef GX_DLSS5
         // Resolution matched to your window (the same "native for your machine" Auto that High and
@@ -5488,6 +5556,19 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Flashes a white square in the top left corner when A is pressed on port 1,\n"
                           "for monitors with the NVIDIA Reflex Latency Analyzer and for LDAT.\n"
                           "Needs Direct3D 12 and NVIDIA Reflex Low Latency On.");
+      if (settings_toggle("Display latency test", &options.latency_test)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("For photodiode testers that press X + D-pad Down (LDAT, pico lag testers).\n"
+                          "X + D-pad Down turns the picture black, then switches it between black and white\n"
+                          "with each press, on the frame the press is read; X + D-pad Up gives the picture back.\n"
+                          "Only the picture changes: the game is the same, online too.");
+      if (settings_toggle("Lossless adapter lag test", &options.lossless_lag_test)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sets the game up the way the Lossless Adapter Manager sets up Slippi for its lag test.\n"
+                          "Turn it on, close the game and start it again with the adapter in its Slippi lag test\n"
+                          "mode: the game boots to character select and rumbles, the adapter plays its inputs into\n"
+                          "a Dream Land match and holds X (white) and A (black) while its sensor times the change.\n"
+                          "Uses a memory card of its own; your saves are untouched. Turn it off when you are done.");
       // For pack authors, not for playing: writes what the game drew, named the way a pack must.
       // Offered with no pack installed too: dumping is how a new pack starts.
       changed |= settings_toggle("Dump textures (for making a pack)", &options.dump_textures);
@@ -7193,6 +7274,37 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SameLine();
         settings_hint("(applies from the next match)");
       }
+      if (settings_toggle("After an online session ends, go back to Training mode", &options.online_return_training)) {
+        RenderOptions::live_online_return_training() = options.online_return_training;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("When the other player leaves, you hold Z to leave, or the connection drops after a match,\n"
+                          "the game goes to Training mode's character select instead of staying online.");
+      // Slippi Dolphin's spectator server (its Slippi settings: Enable spectator, Spectator port),
+      // read once at start as Dolphin does.
+      if (settings_toggle("Spectator server (Slippi Launcher broadcast, overlays, experimental)", &options.slippi_spectator)) {
+        RenderOptions::live_slippi_spectator() = options.slippi_spectator;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sends this game to the Slippi Launcher on this PC the way Slippi Dolphin does:\n"
+                          "its Broadcast tab (a tournament stream's code) and stream overlays read it.\n"
+                          "Uses the same port as Slippi Dolphin, so close Slippi Dolphin while playing here.\n"
+                          "Takes effect the next time the game starts.");
+      ImGui::SameLine();
+      int spectator_port = options.slippi_spectator_port;
+      ImGui::SetNextItemWidth(110.0f);
+      if (ImGui::InputInt("Port##spectator", &spectator_port, 0, 0)) {
+        options.slippi_spectator_port = std::clamp(spectator_port, 1, 65535);
+        RenderOptions::live_slippi_spectator_port() = options.slippi_spectator_port;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("51441 is Slippi Dolphin's port, the one the Slippi Launcher looks at.");
+      if (slippi::spectate::running())
+        settings_hint(("Serving on port " + std::to_string(slippi::spectate::port()) + ".").c_str());
+      else if (options.slippi_spectator)
+        settings_hint("Not serving: starts with the game (see the log if the port is taken).");
     }
 #endif
 
@@ -7516,6 +7628,18 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (!g_edit_follow_active) settings_hint("Editing your selected controller. Turn on Follow player 1 to return to the active pad.");
     const Family& cur_family = kFamilies[family_sel];
     ImGui::Spacing();
+    // On every tab: with the adapter taken by Steam, port 1 falls back to Steam's Xbox copy of the
+    // controller, so the player is usually looking at the Xbox tab when this matters.
+    for (const std::string& problem : {host::gcadapter_problem(), host::switch_pad_problem()}) {
+      if (problem.empty()) continue;
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.25f, 1.0f));
+      ImGui::TextWrapped("%s", problem.c_str());
+      ImGui::PopStyleColor();
+      ImGui::Spacing();
+    }
+    if (cur_family.fam == (int)host::PadFamily::Box)
+      settings_hint("Mod X and Mod Y work inside the box itself and are never bound here. A Frame1 plugged in "
+                    "normally shows up as a GameCube adapter: set it up under GameCube.");
     if (cur_family.fam == (int)host::PadFamily::GameCube) {
       const double rate = host::gcadapter_poll_rate_hz();
       if (rate > 0.0) ImGui::Text("Adapter polling rate: %.0f Hz", rate);
@@ -7581,7 +7705,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         // in its own firmware), so only the keyboard binds the four directions; two keys held
         // together give the diagonals. A pad that really sends C directions as buttons can still
         // bind them in the list below.
-        const bool analog_c = tab_kind != host::CaptureDevice::Keyboard;
+        // The Box tab shows them too: a box in DInput or keyboard-style mode can send its C-stick
+        // and stick as plain buttons, and its player looked for them in the picture, not the list.
+        const bool analog_c = tab_kind != host::CaptureDevice::Keyboard && tab_kind != host::CaptureDevice::HidPad;
         const int waiting = state.rebind_kind == tab_kind && state.rebind_index == tab_index ? state.rebind_action : -1;
         const uint32_t live = live_actions(snap, tab_kind, tab_index);
         int right_clicked = -1, hovered = -1;
@@ -7630,6 +7756,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (seen[tab] && now_b != last_seen[tab]) autosave_profile(tab);
           last_seen[tab] = now_b;
           seen[tab] = true;
+        }
+
+        // The stick modifier's push, for the devices whose stick can be made of buttons.
+        if (cur_family.fam < 0 || cur_family.fam == (int)host::PadFamily::Box) {
+          ImGui::Spacing();
+          ImGui::SetNextItemWidth(200.0f);
+          changed |= settings_slider("Stick modifier push", &host::g_stick_modifier_percent, 10, 100, "%d%%");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("While the Stick modifier is held, the stick directions bound to buttons push only\n"
+                              "this far, like Dolphin's Modifier: 50%% walks. With Mod X or Mod Y bound the box\n"
+                              "coordinates apply instead.");
         }
 
         // ---- the rest, folded away ----
@@ -7713,6 +7850,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (ImGui::BeginTable("bindings", 2, ImGuiTableFlags_SizingStretchSame)) {
             for (int i = 0; i < (int)host::BindAction::Count; ++i) {
               if (analog_c && host::is_cstick_action(i) && tab_kind != host::CaptureDevice::HidPad) continue;
+              // The box buttons act only on the keyboard and a box (apply_box_actions).
+              if (host::is_box_action(i) && tab_kind != host::CaptureDevice::Keyboard && tab_kind != host::CaptureDevice::HidPad) continue;
               ImGui::TableNextColumn();
               ImGui::PushID(i);
               const bool pressed_now = (live >> i) & 1;
@@ -8196,6 +8335,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
     // Reflex flash indicator: a white square on the frame A goes down on port 1, and the matching
     // marker, which a latency analyzer monitor or LDAT times against the photons.
+    gx::set_latency_test(options.latency_test);
+    if (const int fill = gx::presented_test_fill(); fill >= 0) {
+      const ImVec2 size = ImGui::GetIO().DisplaySize;
+      const ImU32 color = fill ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 255);
+      ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), size, color);
+    }
     if (options.reflex_flash && options.reflex_mode > 0) {
       static bool a_was_down = false;
       host::PadState pads[4]{};

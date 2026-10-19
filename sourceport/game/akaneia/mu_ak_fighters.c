@@ -413,6 +413,20 @@ int mu_ak_kind_from_mex(int mex_internal)
     return mex_internal - ak_shift < Ft_Kind_Max ? mex_internal - ak_shift : -1;
 }
 
+const void* mu_ak_cpu_list(mu_u32 raw)
+{
+    /* Big enough for the longest list walk past an empty first entry (all zero: it ends at once). */
+    static const unsigned long long zeros[0x80];
+    const mu_u32 offset = raw & 0x3FFFFFFFu;
+
+    if (raw == 0 || (raw & 0x80000000u) != 0) {
+        return (const void*) (mu_uptr) raw;
+    }
+    /* Not a game address: the console reads RAM at the offset while it is inside its 24 MB, and
+     * 0 past it. */
+    return offset < 0x01800000u ? (const void*) (mu_uptr) (0x80000000u + offset) : (const void*) zeros;
+}
+
 int mu_ak_mex_internal(int kind)
 {
     if (kind >= 0 && kind < Ft_Kind_MasterH) {
@@ -425,6 +439,36 @@ int mu_ak_mex_internal(int kind)
         return ak_mex[kind - MU_AK_KIND_BASE];
     }
     return -1;
+}
+
+/* ftCo_800C0200 inlines ftCo_800C0134 (console 800C025C to 800C02B0), and m-ex moved only the
+ * real function's table read to its own table (its codes at ftCo_800C0134+24 and
+ * ftCo_800C0408+134, +1B0): the inlined copy still reads the retail ftData_UnkMotionStates4, 33
+ * rows at 803C1E38, at the fighter's m-ex internal id. An id of 33 or more reads on into the next
+ * retail table, ftKindCalcIndiviParamTable at 803C1EBC: a retail fighter's LoadSpecialAttrs, run
+ * on this fighter (Lucas TDX, internal 37, gets Kirby's; every attribute block fits the 0x424 byte
+ * pool both engines allocate). The fighter's own slot 24 hook, which the real function calls, is
+ * never reached that way; calling it there instead recursed without end for a hook that removes
+ * color animations itself. Returns the event that copy calls, NULL for none. Retail kinds read
+ * their own rows, so on a retail disc this is the decomp's table. */
+HSD_GObjEvent mu_ak_colanim_reset_inline_event(int kind)
+{
+    static int reported;
+    const int id = mu_ak_mex_internal(kind);
+    if (id < 0) {
+        return NULL;
+    }
+    if (id < Ft_Kind_Max) {
+        return ftData_UnkMotionStates4[id];   /* retail rows: unchanged by the registry */
+    }
+    if (id < 2 * Ft_Kind_Max) {
+        return ftKindCalcIndiviParamTable[id - Ft_Kind_Max];
+    }
+    if (!reported) {   /* no disc served has an id past both tables (ACE ends at 65) */
+        reported = 1;
+        OSReport("[ak] color reset: m-ex internal id %d reads past ftKindCalcIndiviParamTable; no call\n", id);
+    }
+    return NULL;
 }
 
 const MuAkFighter* mu_ak_fighter(int kind)
@@ -737,13 +781,36 @@ int mu_ak_test_results(void)
 }
 #endif
 
-/* An added character kind the character select screen may offer and start a match with. */
+/* An added character kind the character select screen may offer and start a match with: a fighter
+ * whose files were found and whose descriptor carries MU_AK_READY (every row of
+ * run-source/rel09-b1-wolf/READY_CHECKLIST.md met), or any found fighter under the development
+ * switch above. */
+/* The mode of the character select last entered. The added fighters are offered on the VS Melee,
+ * Special Melee and Training screens only: the 1P modes, Event and Stadium read per character
+ * tables the mod fills with its own code (the Classic intro's demo fighter crashed on Wolf).
+ * Starts open, so a match started without a select screen (--match, replays) is unchanged. */
+static int ak_css_offers = 1;
+
+void mu_ak_css_mode(int match_type)
+{
+    const int offers = match_type <= 0xA || match_type == 0x17;   /* VS_SLOWMO, TRAINING_MODE */
+    if (!offers && ak_css_offers) {
+        OSReport("[ak] character select mode %d: the added fighters are offered in VS and Training only\n",
+                 match_type);
+    }
+    ak_css_offers = offers;
+}
+
 int mu_ak_ckind_selectable(int ckind)
 {
 #ifdef MU_AKANEIA_FIGHTERS
-    if (MU_AK_CKIND(ckind) && ak_css_override()) {
+    if (MU_AK_CKIND(ckind)) {
         const int slot = ckind - MU_AK_CKIND_BASE;
-        return ak_fighter[slot] != NULL && ak_ext[slot] >= 0;
+        const MuAkFighter* ft = ak_fighter[slot];
+        if (ft == NULL || ak_ext[slot] < 0) {
+            return 0;
+        }
+        return ((ft->flags & MU_AK_READY) != 0 || ak_css_override()) && ak_css_offers;
     }
 #else
     (void) ckind;
@@ -753,17 +820,12 @@ int mu_ak_ckind_selectable(int ckind)
 
 int mu_ak_css_selectable(int ext)
 {
-    /* Not yet for any fighter: every added fighter stays locked, whatever its registry state
-     * (MU_AK_READY), until the validation in CREATION_LAYER_PLAN.md is done. The development
-     * switch above is the only way in. */
 #ifdef MU_AKANEIA_FIGHTERS
-    if (ak_css_override()) {
-        return mu_ak_ckind_selectable(mu_ak_ckind_from_mex(ext));
-    }
+    return mu_ak_ckind_selectable(mu_ak_ckind_from_mex(ext));
 #else
     (void) ext;
-#endif
     return 0;
+#endif
 }
 
 /* ---- the view change ---- */

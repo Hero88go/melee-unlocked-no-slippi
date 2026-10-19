@@ -231,9 +231,11 @@ endif()
 file(GLOB GXNATIVE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gxnative/*.c")
 list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})
 # Akaneia's added fighters, native (akaneia/INTEGRATION.md): the registry and each fighter's own C.
-# The fighters themselves are work in progress: they build only with -DMU_AKANEIA_FIGHTERS=ON, so a
-# release never carries an unfinished fighter (the registry alone keeps every added fighter locked).
-option(MU_AKANEIA_FIGHTERS "Build the work-in-progress native Akaneia fighters" OFF)
+# A fighter is offered on the character select only when its descriptor carries MU_AK_READY
+# (mu_ak_fighters.c); the others stay locked. ACE's fighters (ace/) build only with
+# -DMU_ACE_FIGHTERS=ON until their own checks are done.
+option(MU_AKANEIA_FIGHTERS "Build the native Akaneia fighters" ON)
+option(MU_ACE_FIGHTERS "Build the native ACE fighters as well" ON)
 list(APPEND SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c")
 if(MU_AKANEIA_FIGHTERS)
   target_compile_definitions(game_flags INTERFACE MU_AKANEIA_FIGHTERS=1)
@@ -243,14 +245,19 @@ if(MU_AKANEIA_FIGHTERS)
   target_compile_options(mu_ak_character_kind_test PRIVATE -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
   target_link_options(mu_ak_character_kind_test PRIVATE -Wl,--gc-sections)
   add_test(NAME native_ak_character_kind COMMAND mu_ak_character_kind_test)
-  file(GLOB_RECURSE AKANEIA_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/*/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/ace/*/*.c")
+  file(GLOB_RECURSE AKANEIA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/*/*.c")
+  if(MU_ACE_FIGHTERS)
+    file(GLOB_RECURSE ACE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/ace/*/*.c")
+    list(APPEND AKANEIA_SOURCES ${ACE_SOURCES})
+  endif()
   list(APPEND SHIM_SOURCES ${AKANEIA_SOURCES})
   # The registry list: one line per fighter descriptor in those sources (a line that starts
   # "const MuAkFighter mu_ak_<name> = "), so a new fighter folder under akaneia/ or ace/ needs no
-  # edit here or in mu_ak_fighters.c. A descriptor added to an existing file: run CMake again.
+  # edit here or in mu_ak_fighters.c. Track contents as well as added/removed files so a
+  # descriptor added to an existing source refreshes the registry on the next build.
   set(MU_AK_REGISTRY "")
   foreach(ak_source ${AKANEIA_SOURCES})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ak_source}")
     file(STRINGS "${ak_source}" ak_lines REGEX "^const MuAkFighter mu_ak_[A-Za-z0-9_]+ = ")
     foreach(ak_line ${ak_lines})
       string(REGEX REPLACE "^const MuAkFighter (mu_ak_[A-Za-z0-9_]+) = .*$" "\\1" ak_symbol "${ak_line}")
@@ -273,6 +280,31 @@ foreach(ak_fighter wolf diddy charizard lucas sonic dedede tails)
       COMPILE_DEFINITIONS "MU_AK_HAVE_${ak_upper}")
   endif()
 endforeach()
+
+# m-ex stages with their own code, native (shim/mu_mex_stage.h, run-source/rel09-stages/LAYER.md
+# phase B): each stage's C under mexstages/<stage>/, helpers in mexstages/common/. The registry is
+# one line per "const MuGrStage mu_gr_<name> = " line in those sources, so a new stage folder needs
+# no edit here. A stage is offered only when its descriptor carries MU_GR_READY; without this option
+# every row that needs its own code stays locked (the data only rows play either way).
+option(MU_MEX_STAGES "Build the native m-ex stage code (mexstages/)" ON)
+if(MU_MEX_STAGES)
+  file(GLOB_RECURSE MEX_STAGE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/mexstages/*/*.c")
+  list(APPEND SHIM_SOURCES ${MEX_STAGE_SOURCES})
+  set(MU_GR_REGISTRY "")
+  foreach(gr_source ${MEX_STAGE_SOURCES})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${gr_source}")
+    file(STRINGS "${gr_source}" gr_lines REGEX "^const MuGrStage mu_gr_[A-Za-z0-9_]+ = ")
+    foreach(gr_line ${gr_lines})
+      string(REGEX REPLACE "^const MuGrStage (mu_gr_[A-Za-z0-9_]+) = .*$" "\\1" gr_symbol "${gr_line}")
+      string(APPEND MU_GR_REGISTRY "MU_GR_STAGE(${gr_symbol})\n")
+    endforeach()
+  endforeach()
+  file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/mu_gr/mu_gr_registry.inc" CONTENT "${MU_GR_REGISTRY}")
+  set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_mex_stage.c" APPEND PROPERTY
+    COMPILE_DEFINITIONS MU_GR_REGISTRY_GENERATED)
+  set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_mex_stage.c" APPEND PROPERTY
+    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}/mu_gr")
+endif()
 
 if(NOT Python3_EXECUTABLE)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)

@@ -164,6 +164,7 @@ bool g_warm_cache_on_play = false;
 // Replay Viewer: "Show it as it was played" (launcher.ini replayasplayed=1). It applies to a replay
 // that has a session trace file beside it; see launcher_replays.inl.
 bool g_replay_as_played = false;
+bool g_save_replays = true;   // launcher.ini savereplays=0 turns it off
 // Replay Viewer list: the sort order (launcher.ini replaysort=1..3; none or 0 is most recent first,
 // an index into kReplaySorts) and "Hide short games" (replayhideshort=1).
 int g_replay_sort = 0;
@@ -249,6 +250,7 @@ void load_ini() {
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
       else if (line == "replayasplayed=1") g_replay_as_played = true;
+      else if (line == "savereplays=0") g_save_replays = false;
       else if (line == "replayhideshort=1") g_replay_hide_short = true;
       else if (line.rfind("replaysort=", 0) == 0) g_replay_sort = std::clamp(std::atoi(line.c_str() + 11), 0, 3);
       else if (line.rfind("lobbyopen=", 0) == 0) g_lobby_prefs.open_to = line.substr(10);
@@ -281,6 +283,7 @@ void save_ini() {
     if (!g_active_version.empty()) f << "activeversion=" << g_active_version << "\n";
     if (g_warm_cache_on_play) f << "warmcache=1\n";
     if (g_replay_as_played) f << "replayasplayed=1\n";
+    if (!g_save_replays) f << "savereplays=0\n";
     if (g_replay_sort != 0) f << "replaysort=" << g_replay_sort << "\n";
     if (g_replay_hide_short) f << "replayhideshort=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
@@ -444,16 +447,30 @@ std::string work_dir() {
   return root.empty() ? g_dir : root;
 }
 std::string settings_ini_path() { return (g_active_version.empty() ? work_dir() : g_dir) + "\\port-settings.ini"; }
+// Where the game writes its .slp files. With "Save replays" off it is a scratch folder under %TEMP%:
+// the game still records (online reporting and the desync checks read the file during the match),
+// and the launcher empties the folder before every launch, so nothing is kept.
+std::string unsaved_replay_dir() {
+  wchar_t temp[MAX_PATH]{}; GetTempPathW(MAX_PATH, temp);
+  return narrow(temp) + "MeleeUnlocked-unsaved-replays";
+}
+std::string replay_dir_for_game() {
+  if (g_save_replays) return g_dir + "\\Replays";
+  std::error_code ec;
+  std::filesystem::remove_all(std::filesystem::path(widen(unsaved_replay_dir())), ec);
+  return unsaved_replay_dir();
+}
+
 std::string game_args() {
   std::string base = active_dir();
   std::string a = " --iso \"" + g_iso + "\" --threaded-renderer --settings-path \"" + settings_ini_path() + "\"";
 #ifdef MELEE_NO_SLIPPI
   // That game has no Slippi user folder and refuses the option.
   if (file_exists(base + "\\Sys\\codehandler.bin"))
-    a += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + g_dir + "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
+    a += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + replay_dir_for_game() + "\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
 #else
   if (file_exists(base + "\\Sys\\codehandler.bin"))
-    a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir + "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
+    a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + replay_dir_for_game() + "\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
 #endif
   return a;
 }
@@ -1192,6 +1209,28 @@ bool lobby_game_ready() {
   return false;
 }
 
+// An m-ex mod disc: its file table names MxDt.dat. `f` is the open disc image.
+static bool mex_disc(std::ifstream& f) {
+  unsigned char at[8]{};
+  f.clear(); f.seekg(0x424);
+  if (!f.read((char*)at, 8)) return false;
+  const uint32_t offset = ((uint32_t)at[0] << 24) | ((uint32_t)at[1] << 16) | ((uint32_t)at[2] << 8) | at[3];
+  const uint32_t size = ((uint32_t)at[4] << 24) | ((uint32_t)at[5] << 16) | ((uint32_t)at[6] << 8) | at[7];
+  if (size < 12 || size > (16u << 20)) return false;
+  std::vector<char> fst(size);
+  f.seekg(offset);
+  if (!f.read(fst.data(), size)) return false;
+  const uint32_t entries = ((uint32_t)(uint8_t)fst[8] << 24) | ((uint32_t)(uint8_t)fst[9] << 16) | ((uint32_t)(uint8_t)fst[10] << 8) | (uint8_t)fst[11];
+  if (!entries || (uint64_t)entries * 12 >= size) return false;
+  for (size_t i = (size_t)entries * 12; i + 8 <= size; ++i)   // the names, NUL-separated
+    if ((i == (size_t)entries * 12 || fst[i - 1] == 0) && _strnicmp(fst.data() + i, "MxDt.dat", 8) == 0 && (i + 8 == size || fst[i + 8] == 0))
+      return true;
+  return false;
+}
+static const wchar_t* const kMexDiscProblem =
+    L"This is a mod disc (Akaneia, ACE or another m-ex build). It has been added under Mods, where it plays with its "
+    L"own content: press Play on it there. The disc chosen here has to be your original Melee NTSC 1.02 ISO.";
+
 // Why the chosen disc cannot be played, or empty. Both engines need the retail NTSC 1.02 disc as the
 // base; a compressed image or another game used to reach the engine and end in a crash report.
 static std::wstring base_disc_problem(const std::string& path) {
@@ -1221,6 +1260,11 @@ static std::wstring base_disc_problem(const std::string& path) {
   BCryptCloseAlgorithmProvider(algorithm, 0);
   if (status >= 0 && std::memcmp(digest, expected, sizeof digest) != 0)
     return L"This is a modded Melee disc. The disc chosen here has to be your original Melee NTSC 1.02 ISO. Add the modded disc under Mods instead.";
+  // m-ex builds (Akaneia, ACE) keep the original game code and bring their own in files, so the
+  // check above passes them; started as the game disc they played as plain Melee, and showed up
+  // as a mod only after the game had scanned them (a report: "it loaded as melee, then after 2
+  // tries it appeared as Play"). m-ex's own table, MxDt.dat, is in the disc's file table.
+  if (mex_disc(f)) return kMexDiscProblem;
   return {};
 }
 
@@ -1255,6 +1299,14 @@ bool game_exe_version_mismatch(const std::string& exe) {
 void start_game() {
   if (g_playing || g_iso.empty()) return;
   if (const std::wstring problem = base_disc_problem(g_iso); !problem.empty()) {
+    if (problem == kMexDiscProblem) {   // the mod disc goes where it plays, as a dropped one does
+      std::error_code ec;
+      const auto mods = std::filesystem::weakly_canonical(std::filesystem::u8path(mod_manager::mods_dir()), ec);
+      const auto disc = std::filesystem::weakly_canonical(std::filesystem::u8path(g_iso), ec);
+      const bool inside = !mods.empty() && disc.u8string().rfind(mods.u8string(), 0) == 0;   // already one of the mods
+      mod_manager::open();
+      if (!inside) std::thread(mod_manager::install_file, widen(g_iso), std::string(), std::string()).detach();
+    }
     MessageBoxW(g_main, problem.c_str(), L"Melee Unlocked Launcher", MB_OK | MB_ICONWARNING);
     return;
   }
@@ -1308,12 +1360,12 @@ void launch_game_now() {
 #ifdef MELEE_NO_SLIPPI
     // As in game_args(): that game has no user folder option and refuses it.
     if (file_exists(base + "\\Sys\\codehandler.bin"))
-      args += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + g_dir +
-              "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
+      args += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + replay_dir_for_game() +
+              "\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
 #else
     if (file_exists(base + "\\Sys\\codehandler.bin"))
-      args += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir +
-              "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
+      args += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + replay_dir_for_game() +
+              "\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
 #endif
     g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear();
   }
@@ -1686,6 +1738,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_REPLAY_HIDESHORT: replay_hide_short_toggle(); break;
         case ID_REPLAY_QUEUE: watch_replay_queue(); break;
         case ID_REPLAY_QUEUE_CLEAR: replay_queue_clear(); break;
+        case ID_REPLAY_SAVE:
+          g_save_replays = !g_save_replays;
+          if (g_replays[13]) InvalidateRect(g_replays[13], nullptr, FALSE);
+          save_ini();
+          break;
         case ID_REPLAY_ASPLAYED:
           if (HIWORD(wp) == BN_CLICKED) {
             g_replay_as_played = !g_replay_as_played;

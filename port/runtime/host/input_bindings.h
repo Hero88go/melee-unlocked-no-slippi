@@ -4,8 +4,10 @@
 #pragma once
 #include <windows.h>
 #include <xinput.h>
+#include <cmath>
 #include <cstdint>
 #include <array>
+#include "box_melee.h"
 
 namespace host {
 
@@ -22,8 +24,19 @@ enum class BindAction : uint8_t {
   // A GameCube trigger is two inputs: the analog travel (light shield) and the click at its end
   // (full shield, tech, air dodge). L and R above are the click alone; these are the travel alone.
   // Appended, so saved profiles and every table indexed by this enum keep their meaning.
-  LAnalog, RAnalog, Count
+  LAnalog, RAnalog,
+  // A box controller's own buttons, for one that sends plain buttons and leaves the stick maths to
+  // the PC (a Frame1 or B0XX in DInput or keyboard mode, or a keyboard set up as one). Binding Mod X
+  // or Mod Y on a device turns its button-made stick and C-stick into the box's Melee coordinates
+  // (box_melee.h); a device without them keeps the plain full-push directions. The shield buttons
+  // are the box's light and mid shield, analog travel on R. Appended, like the rest.
+  ModX, ModY, LightShield, MidShield,
+  // Dolphin's per-stick Modifier: while held, a stick made of buttons pushes only part of the way
+  // (g_stick_modifier_percent, 50 by default), so a keyboard can walk. Appended, like the rest.
+  StickMod,
+  Count
 };
+inline constexpr bool is_box_action(int i) { return i >= (int)BindAction::ModX && i <= (int)BindAction::MidShield; }
 inline constexpr bool is_cstick_action(int i) { return i >= (int)BindAction::CUp && i <= (int)BindAction::CRight; }
 inline constexpr bool is_analog_action(int i) { return i == (int)BindAction::LAnalog || i == (int)BindAction::RAnalog; }
 inline constexpr bool is_stick_action(int i) { return i >= (int)BindAction::SUp && i <= (int)BindAction::SRight; }
@@ -75,7 +88,9 @@ inline constexpr uint16_t kActionPadBit[(size_t)BindAction::Count] = {
   0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002,
   0, 0, 0, 0,  // C-stick directions are not buttons (see apply_cstick_actions)
   0, 0, 0, 0,  // control stick directions likewise (see apply_stick_actions)
-  0, 0         // the trigger travel is a value, not a button (see apply_actions)
+  0, 0,        // the trigger travel is a value, not a button (see apply_actions)
+  0, 0, 0, 0,  // the box buttons shape the sticks and the R travel (see apply_box_actions)
+  0            // the stick modifier scales the button-made stick (see apply_stick_actions)
 };
 
 // Pushes the C-stick for bound C-stick directions in `actions` (BindAction bit indices).
@@ -88,12 +103,48 @@ inline void apply_cstick_actions(uint32_t actions, int8_t& sub_x, int8_t& sub_y)
 
 // The same for the control stick. Returns false when nothing is bound or held, so a caller with an
 // analog stick of its own can leave it alone rather than have it zeroed by an unbound keyboard.
-inline bool apply_stick_actions(uint32_t actions, int8_t& stick_x, int8_t& stick_y) {
+// With the stick modifier held, the push is `modifier_percent` of the full one (rounded to
+// nearest), as Dolphin's Modifier does: on a keyboard, half a push walks.
+inline bool apply_stick_actions(uint32_t actions, int8_t& stick_x, int8_t& stick_y, int modifier_percent = 50) {
   const bool up = actions & (1u << (int)BindAction::SUp), down = actions & (1u << (int)BindAction::SDown);
   const bool left = actions & (1u << (int)BindAction::SLeft), right = actions & (1u << (int)BindAction::SRight);
   if (!up && !down && !left && !right) return false;
-  if (up != down) stick_y = up ? 127 : -127;
-  if (left != right) stick_x = right ? 127 : -127;
+  int push = 127;
+  if (actions & (1u << (int)BindAction::StickMod)) {
+    const int pct = modifier_percent < 0 ? 0 : modifier_percent > 100 ? 100 : modifier_percent;
+    push = (127 * pct + 50) / 100;
+  }
+  if (up != down) stick_y = (int8_t)(up ? push : -push);
+  if (left != right) stick_x = (int8_t)(right ? push : -push);
+  return true;
+}
+
+// Box mode, for a device with Mod X or Mod Y bound (`box_mode`): the stick and C-stick made of its
+// buttons take the box's Melee coordinates (box_melee.h) in place of the full pushes above, Mod X +
+// Mod Y turns the C buttons into the D-pad, and the light and mid shield buttons press R that deep.
+// `state` keeps the opposing-direction rule between polls: one per device and per reader. Returns
+// false, touching nothing, when the device is not in box mode.
+template <class Pad> bool apply_box_actions(bool box_mode, uint32_t actions, Pad& pad, box::State& state) {
+  if (!box_mode) return false;
+  auto on = [&](BindAction a) { return ((actions >> (int)a) & 1u) != 0; };
+  box::Buttons in;
+  in.left = on(BindAction::SLeft); in.right = on(BindAction::SRight);
+  in.down = on(BindAction::SDown); in.up = on(BindAction::SUp);
+  in.c_left = on(BindAction::CLeft); in.c_right = on(BindAction::CRight);
+  in.c_down = on(BindAction::CDown); in.c_up = on(BindAction::CUp);
+  in.mod_x = on(BindAction::ModX); in.mod_y = on(BindAction::ModY);
+  in.shield = on(BindAction::L) || on(BindAction::R) || on(BindAction::LAnalog) || on(BindAction::RAnalog) ||
+              on(BindAction::LightShield) || on(BindAction::MidShield);
+  in.b = on(BindAction::B);
+  const box::Result r = box::melee(in, state);
+  if (r.stick) { pad.stick_x = r.stick_x; pad.stick_y = r.stick_y; }
+  if (r.c) { pad.sub_x = r.c_x; pad.sub_y = r.c_y; }
+  if (r.dpad_up) pad.button |= kActionPadBit[(size_t)BindAction::DUp];
+  if (r.dpad_down) pad.button |= kActionPadBit[(size_t)BindAction::DDown];
+  if (r.dpad_left) pad.button |= kActionPadBit[(size_t)BindAction::DLeft];
+  if (r.dpad_right) pad.button |= kActionPadBit[(size_t)BindAction::DRight];
+  const uint8_t shield = on(BindAction::MidShield) ? box::kMidShield : on(BindAction::LightShield) ? box::kLightShield : 0;
+  if (shield > pad.trig_r) pad.trig_r = shield;
   return true;
 }
 
@@ -121,6 +172,8 @@ inline KeyBindings default_key_bindings() {
   k.vk[(size_t)BindAction::SDown]  = VK_DOWN;
   k.vk[(size_t)BindAction::SLeft]  = VK_LEFT;
   k.vk[(size_t)BindAction::SRight] = VK_RIGHT;
+  // Shift walks, as Dolphin's keyboard profile has it (its Modifier key).
+  k.vk[(size_t)BindAction::StickMod] = VK_SHIFT;
   return k;
 }
 
@@ -232,8 +285,9 @@ inline HidBindings hid_bindings_before_hat() {
 
 // Box controller layouts, from the Dolphin profiles their firmware or feeder ships (Dolphin numbers
 // DInput buttons from 0, which is bit N here).
-// B0XX-layout boxes on HayBox firmware in DInput mode (Arduino based: B0XX R1-R3, LBX), from
-// HayBox_DInput.ini. Pico-based HayBox boxes default to XInput and need nothing.
+// B0XX-layout boxes on HayBox firmware in DInput mode, from HayBox_DInput.ini: the Arduino-based
+// ones by name (B0XX R1-R3, LBX), the Pico-based ones (a Frame1 in DInput mode) by their descriptor
+// (haybox_dinput_shape in hid_pad.h). A Frame1 plugged in normally is a GameCube adapter instead.
 inline HidBindings haybox_dinput_bindings() {
   HidBindings b{};
   b.mask[(size_t)BindAction::A] = 1u << 1;  b.mask[(size_t)BindAction::B] = 1u << 0;
@@ -457,6 +511,18 @@ template <class M> void migrate_trigger_bindings(M* mask, uint8_t* level, uint32
   }
 }
 extern std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones;
+// An XInput stick axis as the GameCube pad's signed value, the way Dolphin reads it: the axis over its
+// full range on that side (32768 below centre, 32767 above), times 127, rounded DOWN (Dolphin adds the
+// centre and casts to u8). Box firmware sends its exact GameCube offsets through this: HayBox's XInput
+// backend writes (x - 128) * 65535 / 255 + 128, which lands back on x only when rounded down. Dividing
+// by 258 rounded toward zero instead, and every negative coordinate came out one short (full left -79,
+// the shield-drop angle -54).
+inline int8_t xinput_axis(int16_t v) {
+  const double s = v < 0 ? v / 32768.0 : v / 32767.0;
+  const int a = (int)std::floor(s * 127.0);
+  return (int8_t)(a > 127 ? 127 : a < -128 ? -128 : a);
+}
+
 inline void apply_deadzone(const Deadzone& dz, int8_t& x, int8_t& y, bool c) {
   const int r = c ? dz.c : dz.main;
   if (r > 0 && (int)x * x + (int)y * y < r * r) { x = 0; y = 0; }
@@ -470,6 +536,7 @@ inline void apply_stick_radius(const Deadzone& dz, int8_t& x, int8_t& y, bool c)
 }
 
 extern KeyBindings g_key_bindings;
+extern int g_stick_modifier_percent;   // the stick modifier's push, percent of a full one (default 50)
 extern std::array<PadBindings, 4> g_pad_bindings;
 extern std::array<GCBindings, 4> g_gc_bindings;
 extern std::array<PadBindings, 4> g_ds4_bindings;

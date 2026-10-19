@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <vector>
 #include "dxgi_paced_mode.h"
+#include "vrr_detect.h"
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
@@ -152,6 +153,9 @@ void check(HRESULT hr, const char* what) {
       next = "This GPU is old for Direct3D 12: the game starts on Direct3D 11 from now on (Settings > Video > Graphics backend).";
     host::die("D3D12: %s failed (%08X): the graphics device was lost, %s (%08X). %s", what, code, device_lost_reason(reason), (unsigned)reason, next);
   }
+  if (code == 0x8007000Eu)   // E_OUTOFMEMORY: the machine, not the GPU (a 0.8.99 laptop with 0.9 of 5.8 GB VRAM in use)
+    host::die("D3D12: %s failed (8007000E): Windows had no memory left for the graphics device. Close other programs "
+              "or restart Windows, then start the game again.", what);
   host::die("D3D12: %s failed (%08X)", what, code);
 }
 template <class T> const IID& IID_PPV_ARGS_Helper_IID() { return __uuidof(T); }
@@ -356,6 +360,15 @@ class D3D12Backend : public Backend {
   }
   std::string profile_line() const override { return d3d12_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
+  bool reflex_pacing(double cap_hz) override {
+    if (opts_.reflex_mode <= 0 || !streamline::reflex_available()) return false;
+    reflex_limit_us_ = cap_hz > 0 ? (uint32_t)std::lround(1e6 / cap_hz) : 0;
+    return true;
+  }
+  void reflex_sleep() override {
+    apply_reflex(std::max(opts_.reflex_mode, fg_applied_ > 0 ? 1 : 0));
+    reflex_token_ = streamline::reflex_sleep((uint32_t)frame_counter_ + 1);   // submit_frame counts this frame next
+  }
   double presentation_wait_seconds() const override { return present_wait_; }
   // DXGI's own count of what reached the screen: presents shown, vertical refreshes that went by,
   // and refreshes that showed the previous frame again. Frame statistics are only reported while
@@ -388,6 +401,13 @@ class D3D12Backend : public Backend {
   }
   bool have_frame_stats_ = false;
   DXGI_FRAME_STATISTICS last_frame_stats_{};
+  int variable_refresh() const override { return vrr_.state(); }
+  bool display_counts_readable() const override { return vrr_readable_; }
+  void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
+  void update_variable_refresh();
+  vrr::Detector vrr_;
+  bool tear_free_ = false, vrr_readable_ = false;
+  double vrr_nominal_hz_ = 0;
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   // EFB copies are about to be freed. texture_sets_ is keyed by resource pointer, so its entries for
@@ -535,7 +555,7 @@ class D3D12Backend : public Backend {
   void apply_fullscreen_mode();
   void wait_frame_latency();
   void create_efb();
-  int pick_scale() const;
+  int pick_scale(bool with_ssaa = true) const;
   float output_aspect() const;
   void wait_gpu();
   uint32_t reserve_srvs(uint32_t count);
@@ -567,7 +587,17 @@ class D3D12Backend : public Backend {
   // after the upscale. Zero for native and DLAA.
   float dlss_mip_bias_ = 0.0f;
   uint64_t mv_draws_ = 0, mv_matched_ = 0;
-  int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
+  int fg_applied_ = -1; int reflex_applied_ = -1;
+  // Reflex pacing (threaded renderer, see reflex_pacing): the frame limit Reflex should hold, what it
+  // was last told, and whether this frame's token and simulation-start marker came from its sleep.
+  uint32_t reflex_limit_us_ = 0, reflex_limit_applied_ = 0;
+  bool reflex_token_ = false;
+  void apply_reflex(int want) {
+    const uint32_t limit = want > 0 ? reflex_limit_us_ : 0;
+    if (want == reflex_applied_ && limit == reflex_limit_applied_) return;
+    streamline::set_reflex(want, limit);
+    reflex_applied_ = want; reflex_limit_applied_ = limit;
+  }   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
   bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
   EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (set in submit_frame)
@@ -1200,10 +1230,10 @@ void D3D12Backend::apply_fullscreen_mode() {
 
 // Mirrors Dolphin Renderer::CalculateTargetSize: an explicit multiplier, or (auto) the smallest
 // integer multiplier whose scaled 640x480 visible area covers the 4:3 output rectangle in the window.
-int D3D12Backend::pick_scale() const {
+int D3D12Backend::pick_scale(bool with_ssaa) const {
   constexpr int max_scale = 16384 / EFB_WIDTH;   // D3D12 texture limit
   if (forced_scale_ > 0) return std::clamp(forced_scale_, 1, max_scale);
-  const int ssaa = std::clamp(opts_.ssaa, 1, 2);
+  const int ssaa = with_ssaa ? std::clamp(opts_.ssaa, 1, 2) : 1;
   if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale * ssaa, 1, max_scale);
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
   float aspect = output_aspect();
@@ -1458,9 +1488,13 @@ void D3D12Backend::configure_dlss() {
     // pick_scale() reports any scale a previous mode forced, so clear it first to get the EFB scale
     // the player actually chose (switching straight from DLSS Quality to DLAA would otherwise size
     // DLAA from the scale Quality had forced).
+    // DLAA is the anti-aliasing: supersampling under it doubled the render size in each direction
+    // and so quadrupled the DLAA pass (a 10-17 report: 55 fps at EFB x6 with scale 3 and SSAA 2 on a
+    // 1080p screen, the same on every version back to 0.8.78). DLAA renders at the scale the player
+    // chose, without the SSAA factor.
     const int saved = forced_scale_;
     forced_scale_ = 0;
-    in_place_scale = pick_scale();
+    in_place_scale = pick_scale(false);
     forced_scale_ = saved;
     out_w = EFB_WIDTH * in_place_scale; out_h = EFB_HEIGHT * in_place_scale;
   }
@@ -1538,6 +1572,8 @@ void D3D12Backend::configure_dlss() {
   float bias_extra = -1.0f;
   if (const char* e = std::getenv("MELEE_DLSS_BIAS_EXTRA")) bias_extra = (float)std::atof(e);
   set_dlss_mip_bias((in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w)) + bias_extra);
+  if (in_place && std::clamp(opts_.ssaa, 1, 2) > 1)
+    host::log("dlss: supersampling is not applied under %s (it anti-aliases already)", upscaler_name());
   host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", upscaler_name(),
             in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
             in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
@@ -1654,28 +1690,38 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
   char vs_name[64], ps_name[64];
   snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)key.vs);
   snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)key.ps);
-  auto compile_vs = [&] {
-    std::string src = generate_vertex_shader(vsu);
+  // A compile error in generated code is a bug in the generator and stops the game with the source
+  // in the log. The compiler running out of memory is not (a 0.8.99 laptop report: "D3D11 Internal
+  // Compiler Error ... 0x8007000e" late in a long session): that draw keeps the generic pipeline.
+  auto compile = [&](const std::string& src, const char* stage, const char* profile, ComPtr<ID3DBlob>& blob) {
     ComPtr<ID3DBlob> err;
-    vs.Reset();
-    if (FAILED(D3DCompile(src.c_str(), src.size(), "vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err))) {
-      host::log("vertex shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
-      host::die("vertex shader compile failed");
+    blob.Reset();
+    const HRESULT hr = D3DCompile(src.c_str(), src.size(), stage, nullptr, nullptr, "main", profile, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &err);
+    if (SUCCEEDED(hr)) return true;
+    const std::string text = err ? std::string((const char*)err->GetBufferPointer(), err->GetBufferSize()) : std::string("?");
+    std::string lower = text;
+    for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+    if (hr == E_OUTOFMEMORY || lower.find("8007000e") != std::string::npos || lower.find("internal compiler error") != std::string::npos) {
+      static std::atomic<int> told{0};
+      if (told.fetch_add(1) < 4) host::log("d3d12: %s shader compile ran out of memory (%08X); its draws use the generic pipeline", stage, (unsigned)hr);
+      blob.Reset();
+      return false;
     }
+    host::log("%s shader compile failed:\n%s\n%s", stage, text.c_str(), src.c_str());
+    host::die("%s shader compile failed", stage);
+  };
+  auto compile_vs = [&] {
+    if (!compile(generate_vertex_shader(vsu), "vs", "vs_5_0", vs)) return false;
     save_shader_blob(opts_.shader_cache + "/" + vs_name, vs.Get());
+    return true;
   };
   auto compile_ps = [&] {
-    std::string src = generate_pixel_shader(psu);
-    ComPtr<ID3DBlob> err;
-    ps.Reset();
-    if (FAILED(D3DCompile(src.c_str(), src.size(), "ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err))) {
-      host::log("pixel shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
-      host::die("pixel shader compile failed");
-    }
+    if (!compile(generate_pixel_shader(psu), "ps", "ps_5_0", ps)) return false;
     save_shader_blob(opts_.shader_cache + "/" + ps_name, ps.Get());
+    return true;
   };
-  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) compile_vs();
-  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) compile_ps();
+  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs) && !compile_vs()) return nullptr;
+  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps) && !compile_ps()) return nullptr;
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
   describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
   ComPtr<ID3D12PipelineState> pso;
@@ -1688,8 +1734,7 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
       // A shader file in the cache that was cut short or damaged is refused here. Both shaders are
       // built again from source, which also replaces the files. If the pipeline is still refused
       // the draw keeps the generic pipeline: one surface shaded roughly instead of a stopped game.
-      compile_vs();
-      compile_ps();
+      if (!compile_vs() || !compile_ps()) return nullptr;
       pd = D3D12_GRAPHICS_PIPELINE_STATE_DESC{};
       describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
       const HRESULT again = device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
@@ -1704,6 +1749,22 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
     if (pipeline_library_ && SUCCEEDED(pipeline_library_->StorePipeline(pso_name, pso.Get()))) pipeline_library_dirty_ = true;
   }
   return pso;
+}
+
+// See Backend::variable_refresh and vrr_detect.h. Called every 32 presents; a window is a second.
+void D3D12Backend::update_variable_refresh() {
+  DXGI_FRAME_STATISTICS st{};
+  vrr_readable_ = swapchain_ && SUCCEEDED(swapchain_->GetFrameStatistics(&st));
+  if (!vrr_readable_) { vrr_.restart(); return; }
+  static const double qpc_hz = [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f.QuadPart > 0 ? (double)f.QuadPart : 1e7; }();
+  if (!vrr_.add({st.PresentCount, st.SyncRefreshCount, (double)st.SyncQPCTime.QuadPart / qpc_hz}, vrr_nominal_hz_)) return;
+  if (vrr_.state() == 1)
+    host::log("display: variable refresh (G-Sync or FreeSync) is on: %.0f refreshes a second for %.0f frames on a %.0f Hz "
+              "display; frames are presented synced under %.0f a second, so they never tear", vrr_.refreshes(), vrr_.shown(),
+              vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
+  else
+    host::log("display: fixed refresh: %.0f refreshes a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(),
+              vrr_.shown(), vrr_nominal_hz_);
 }
 
 void D3D12Backend::pso_worker() {
@@ -3136,6 +3197,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 }
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  set_presented_test_fill(frame.test_fill);
   Stopwatch frame_sw;
   static const bool startup_diag = std::getenv("MELEE_GPU_STARTUP_DIAG") != nullptr;
   double diag_time = startup_diag ? Stopwatch::now() : 0.0;
@@ -3199,6 +3261,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (adapter3_ && frame_counter_ && (frame_counter_ % 3600) == 0) {
     float used = 0, total = 0;
     if (vram_usage(&used, &total)) host::log("vram: %.2f of %.2f GB in use (EFB %dx%d, replacement textures %.0f MB)", used, total, efb_w_, efb_h_, replacement_bytes_ / 1048576.0);
+    host::log_memory();
   }
   if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
     texpack::report();
@@ -3304,7 +3367,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     list_->ClearRenderTargetView(mrtv, zero, 0, nullptr);
     D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
     list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
-    if (!xess_active()) streamline::new_frame((uint32_t)frame_counter_);
+    if (!xess_active() && !reflex_token_) streamline::new_frame((uint32_t)frame_counter_);
     streamline::jitter(frames_presented_, &jitter_x_, &jitter_y_);
     // Prefer the fighter camera: TM-CE can submit its perspective HUD before the world.
     streamline::FrameConstants fc{};
@@ -3336,7 +3399,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // Reflex and frame generation: a frame token is needed for the markers even without DLSS, and even
   // with Reflex's own low-latency mode left Off -- the PC Latency markers below are what feeds the
   // latency reading, and that keeps working at Native so there is something to compare On against.
-  if (!dlss_active_ && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
+  if (!dlss_active_ && streamline::reflex_available() && !reflex_token_) streamline::new_frame((uint32_t)frame_counter_);
   {
     // DLSS-G is only valid while Melee is drawing a running 3D match. Keep it off during
     // menus, loading screens, and results; those frames do not have usable motion/depth inputs.
@@ -3344,7 +3407,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
                         ? opts_.frame_generation_mode : 0;
     // Frame generation needs Reflex on: it takes at least "On" while frame generation runs.
     const int want_reflex = streamline::reflex_available() ? std::max(opts_.reflex_mode, want_fg ? 1 : 0) : 0;
-    if (want_reflex != reflex_applied_) { streamline::set_reflex(want_reflex); reflex_applied_ = want_reflex; }
+    apply_reflex(want_reflex);
     // Sampled regardless of mode: the PC Latency markers run every frame either way (below), so the
     // measurement stays available running plain Native -- Reflex's low-latency algorithm is a
     // separate thing from being told how long a frame is taking.
@@ -3357,7 +3420,8 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       fg_applied_ = want_fg;
     }
   }
-  streamline::pcl_marker(0); streamline::pcl_marker(1); streamline::pcl_marker(2);
+  if (!reflex_token_) streamline::pcl_marker(0);   // under Reflex pacing it was set after the sleep
+  streamline::pcl_marker(1); streamline::pcl_marker(2);
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }
   const EfbCopy* screen = nullptr;
   for (const EfbCopy& copy : frame.copies) if (copy.to_xfb) screen = &copy;
@@ -3451,7 +3515,14 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     streamline::pcl_marker(3); streamline::pcl_marker(4);
     Stopwatch present_sw;
     try {
-      swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      // Synced when V-Sync is on, and on a display that follows the frames (tear_free_, from the
+      // presentation loop): there a frame starts its own refresh, so syncing costs nothing while
+      // the rate stays under the refresh, and a frame that comes a little early waits instead of
+      // tearing. A 0.8.99 player with a 240 Hz G-Sync screen and V-Sync off saw tearing.
+      // Not while DLSS frame generation runs: it paces its own frames and needs V-Sync off in the
+      // game (NVIDIA: V-Sync for it belongs in the driver).
+      const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
+      swapchain_->Present(synced ? 1 : 0, (!synced && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());
       opts_.frame_generation_mode = 0;
@@ -3461,7 +3532,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     diag("swapchain Present and pacing");
     g_prof[10] += present_sw.lap();
     streamline::pcl_marker(5);
+    reflex_token_ = false;
     ++frames_presented_;
+    if ((frames_presented_ & 31) == 0) update_variable_refresh();
     streamline::frame_generation_after_present();
     if (frames_presented_ % 600 == 0) streamline::log_frame_generation();
   }

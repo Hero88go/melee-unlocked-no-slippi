@@ -54,6 +54,7 @@
 #include "exi_slippi.h"
 #include "native_slippi_bridge.h"
 #include "native_replay_stream.h"
+#include "slippi_spectate.h"
 #include "slippi_net.h"
 #include "native_recording_codes.h"
 #include "slippilib/SlippiGame.h"
@@ -855,6 +856,9 @@ template <class F> void guarded(F&& f) {
   try { f(); } catch (const ExitRequested& stop) {
     g_exit_code = stop.code;
     write_replay_recording();
+#ifndef MELEE_NO_SLIPPI
+    slippi::spectate::stop();
+#endif
     log_native_pose_bridge_stats();
     if (g_shutdown) g_shutdown(stop.code);
     host::end_process(stop.code);   // everything is saved: do not run the libraries' unload code
@@ -2161,13 +2165,19 @@ void card_fill_stat(const SourceCardFile& file, SourceCardStat& stat) {
 }
 }  // namespace
 
+// The Lossless adapter's lag test (host/lag_test_codes.h): its app boots Dolphin with no memory card,
+// and the "Skip Memcard Prompt" code it relies on skips only that case, so slot A is empty too.
+static bool card_slot_missing(int32_t chan) {
+  static const bool lag_test = std::getenv("MELEE_LAG_TEST") != nullptr && !std::getenv("MELEE_LAG_TEST_KEEP_CARD");
+  return chan != 0 || lag_test;
+}
 int32_t h_card_probe(int32_t chan, int32_t* mem_size, int32_t* sector_size) {
-  if (chan != 0) return CARD_NOCARD;
+  if (card_slot_missing(chan)) return CARD_NOCARD;
   if (mem_size) *mem_size = CARD_MEM_SIZE_MBIT;
   if (sector_size) *sector_size = CARD_SECTOR;
   return CARD_READY;
 }
-int32_t h_card_mount(int32_t chan) { if (chan != 0) return CARD_NOCARD; card_mount_files(); return CARD_READY; }
+int32_t h_card_mount(int32_t chan) { if (card_slot_missing(chan)) return CARD_NOCARD; card_mount_files(); return CARD_READY; }
 int32_t h_card_unmount(int32_t chan) { if (chan != 0) return CARD_NOCARD; card_reset_mount(); return CARD_READY; }
 int32_t h_card_open(int32_t chan, const char* name, int32_t* file_no, uint32_t* length) {
   if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
@@ -2420,6 +2430,9 @@ std::vector<uint8_t> g_replay_game_start;   // the original Game Start payload (
 std::vector<uint8_t> g_replay_game_end;
 slippi::NativeReplayStream g_replay_stream;
 bool g_replay_written = false;
+// The current recording goes to the spectator server only (an offline match with MELEE_SOURCE_RECORD
+// "2"): write_replay_recording leaves it unwritten.
+bool g_replay_spectator_only = false;
 
 // ---- the replay viewer's controls (host/replay_control.h) ----
 // The game calls in at the top of every engine frame of the replay's match (mu_replay_frame_begin):
@@ -2547,7 +2560,7 @@ uint32_t replay_codes(const Slippi::GameSettings& s, uint8_t* ps_frozen_toggle) 
 }
 
 void write_replay_recording() {
-  if (g_replay_written || !g_replay_stream.active()) return;
+  if (g_replay_written || !g_replay_stream.active() || g_replay_spectator_only) return;
   const auto file = g_replay_stream.encode();
   if (file.empty()) {
     host::log("replay: recording failed: %s", g_replay_stream.error().c_str());
@@ -2640,6 +2653,10 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
       codes = {0xFF, 0, 0, 0, 0, 0, 0, 0};
     }
     g_replay_written = false;
+    {
+      const char* record = std::getenv("MELEE_SOURCE_RECORD");
+      g_replay_spectator_only = !online && record && std::string(record) == "2";
+    }
     // Only layers that change the disc's files make a replay need them (a save file alone does not).
     g_replay_stream.set_mod_profile(g_retail_view || g_view_alias.empty() ? std::string() : g_mod_fingerprint);
     // The 20XX TE features in effect (offline only; online matches never carry them).
@@ -2648,8 +2665,14 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
     g_replay_stream.set_feature_options2(online ? 0u : (gx::RenderOptions::live_te_options2() & te_words_mask2()) |
                                                       cpu_20xx_bit());   // "20XX CPUs" too: playback replays it
     g_replay_stream.set_feature_options3(online ? 0u : h_game_options3());   // CPU training options, likewise
-    if (!g_replay_stream.begin_slippi(start, codes, (int64_t)std::time(nullptr)))
+    // The spectator server (Slippi Dolphin's): start_game, then the command table and every event
+    // as recorded, then end_game after Game End, the order Dolphin's DMAWrite sends them.
+    slippi::spectate::start_game();
+    g_replay_stream.set_event_sink([](const uint8_t* data, uint32_t size) { slippi::spectate::write(data, size); });
+    if (!g_replay_stream.begin_slippi(start, codes, (int64_t)std::time(nullptr))) {
       host::log("replay: cannot start native recording: %s", g_replay_stream.error().c_str());
+      slippi::spectate::end_game();
+    }
     else if (online)
       host::log("replay: recording online game %u", g_online_games);
     return;
@@ -2659,6 +2682,7 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
   if (!g_replay_stream.append(command, payload, size))
     host::log("replay: cannot record event %02X: %s", command, g_replay_stream.error().c_str());
   if (!g_replay && command == 0x39) {
+    slippi::spectate::end_game();
     // The native game's stable Game End record has the end method and four placements.
     // A unique zero placement is a winner; ambiguous endings stay incomplete.
     int winner = -1;
@@ -2955,6 +2979,7 @@ bool set_replay(const char* path) {
   g_replay_game_end = read_replay_event(path, 0x39);
   if (g_replay_game_start.empty()) { host::log("replay: %s has no Game Start event", path); g_replay.reset(); return false; }
   Slippi::GameSettings* s = g_replay->GetSettings();
+  g_replay_stream.set_event_sink(nullptr);   // the viewer's own recording is not broadcast
   if (!g_replay_stream.begin(g_replay_game_start, s->geckoCodes)) {
     host::log("replay: cannot start recording: %s", g_replay_stream.error().c_str());
     g_replay.reset();
@@ -3042,8 +3067,8 @@ int run(void (*shutdown)(int)) {
     if (!host::disc_archive_header(header, sizeof header, file.length, &error))
       host::die("The game ISO contains damaged LbRb.dat: %s. Select a fresh, uncompressed Melee NTSC 1.02 ISO; rebuild a modified ISO from a working base image.", error.c_str());
   }
-  // A development game library built with the native Akaneia fighters exports this name; the shipped
-  // one does not, and an Akaneia disc stays refused. Looked up without running any of its code.
+  // A game library built with the native Akaneia fighters exports this name; one built without them
+  // does not, and an Akaneia disc stays refused. Looked up without running any of its code.
   {
     const char* named = std::getenv("MELEE_GAME_DLL");
     if (HMODULE probe = LoadLibraryExA(named ? named : g_dll.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES)) {
@@ -3051,7 +3076,7 @@ int run(void (*shutdown)(int)) {
       FreeLibrary(probe);
       if (native_akaneia) {
         allow_native_akaneia(true);
-        host::log("mods: development game library with native Akaneia fighters; Akaneia discs are accepted");
+        host::log("mods: game library with native Akaneia fighters; Akaneia discs are accepted");
       }
     }
   }
@@ -3076,6 +3101,15 @@ int run(void (*shutdown)(int)) {
     host::die("ISO DOL does not match vanilla Melee NTSC 1.02; the Source engine runs only the retail game (modded discs are not supported)");
   // Diagnostic builds of the game (for example the M0 maths audit) without replacing the shipped DLL.
   if (const char* dll = std::getenv("MELEE_GAME_DLL")) g_dll = dll;
+#ifndef MELEE_NO_SLIPPI
+  // With the spectator server on, offline matches are recorded too, for the broadcast only (no .slp
+  // unless --record-native asked for one): Slippi Dolphin sends every game it records, offline ones
+  // included. Set before the game library loads, so its C runtime sees it.
+  if (!std::getenv("MELEE_SOURCE_RECORD") && gx::RenderOptions::live_slippi_spectator()) {
+    _putenv_s("MELEE_SOURCE_RECORD", "2");
+    SetEnvironmentVariableA("MELEE_SOURCE_RECORD", "2");
+  }
+#endif
   g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
   if (!module) host::die("cannot load %s (error %lu)", g_dll.c_str(), GetLastError());
@@ -3126,6 +3160,9 @@ int run(void (*shutdown)(int)) {
   lcancel::set_native_view([](MuLcancelView* out) { if (g_game.lcancel_view) g_game.lcancel_view(out); });
   host::log("source port: %s at %p, MEM1 %u MB at %08llX", g_dll.c_str(), (void*)module, MEM1_SIZE >> 20, (unsigned long long)MEM1_BASE);
   int code = 0;
+#ifndef MELEE_NO_SLIPPI
+  slippi::spectate::start();   // Slippi Dolphin's spectator server (settings: Spectator server)
+#endif
   guarded([&] { code = g_game.run(); });
   log_native_pose_bridge_stats();
   gx::set_native_pose_capture_enabled(false);

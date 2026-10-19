@@ -3,7 +3,9 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <functional>
+#include <new>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -54,7 +56,23 @@ extern ppc::Context* cpu;
 void log(const char* fmt, ...);
 void log_guest_text(const char* data, size_t len);  // OSReport output
 void log_flush();   // writes every queued log line now (log() hands lines to a writer thread)
+void log_memory();  // one line: this process's size and the memory Windows has left
 [[noreturn]] void die(const char* fmt, ...);
+// The body of a worker thread whose work the game can do without (a song, a video background, a
+// texture, a thumbnail, a file cache warm-up). An exception left a thread function and stopped the
+// whole game: a 0.8.99 report ran out of memory late in a session and the music thread's allocation
+// for the next song took the match down ("bad allocation"). Here it ends only that piece of work.
+template <class Body> void optional_work(const char* what, Body&& body) noexcept {
+  try {
+    body();
+  } catch (const std::bad_alloc&) {
+    log("%s: not enough memory; skipped", what);
+  } catch (const std::exception& e) {
+    log("%s: stopped (%s)", what, e.what());
+  } catch (...) {
+    log("%s: stopped", what);
+  }
+}
 // Ends the process now, with everything of ours already saved, without running DLL unload code
 // (see end_process in host.cpp for why).
 [[noreturn]] void end_process(int code);
@@ -186,6 +204,7 @@ void report_recent_files();   // a mod disc's game stopped: one line with the la
 void report_heap_panic(ppc::Context& c);   // OSPanic at lbmemory.c:233: logs the heap that had no room and the title demo's draw
 void note_scene_memory();     // a mod disc's scene changed: one line with the current object heap's size and use
 void report_object_memory();   // OSPanic at memory.c:52: one line per object heap (size, free, largest free piece)
+bool grow_object_heap(uint32_t heap, uint32_t bytes);   // a full heap: add space above the console's 24 MB (host.cpp)
 void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
 void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language
@@ -232,6 +251,13 @@ void input_last_pads(PadState out[4]);
 uint32_t gcadapter_poll(PadState out[4]);
 // Measured incoming USB reports per second, shared by the four adapter sockets; zero if stale.
 double gcadapter_poll_rate_hz();
+// Why a plugged-in adapter cannot be read (another program has it, no driver), in words for the
+// Controls tab; empty when there is nothing to say.
+std::string gcadapter_problem();
+// The same for a Switch Online GameCube controller on USB that cannot be started (Steam holds it,
+// no driver on its command interface); empty once it streams.
+std::string switch_pad_problem();
+bool steam_running();   // steam.exe is running (it takes adapters and Switch controllers)
 // Reconnect and recalibrate the adapter on its worker, without blocking game/render threads.
 bool gcadapter_request_reset();
 bool gcadapter_reset_pending();

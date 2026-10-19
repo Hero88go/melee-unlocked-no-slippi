@@ -855,12 +855,18 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     }
     if (known) { d.name = known->name; d.version = known->version; d.catalog_id = known->id; }
     if (known && d.hash == known->hash && used_base) *used_base = false;   // a known build by its own bytes
-    set_support(d, Engine::Recomp, known && std::string(known->id) == "akaneia" ? Support::Supported : Support::Untested, true);
+    // Akaneia 1.0.1 and ACE 2.0.0 have their fighters and stages in the Source Port's own C
+    // (sourceport/game/akaneia, ace, mexstages), checked against those builds' files; any other m-ex
+    // build runs its code on the Static Recomp.
+    const bool native = known && (std::string(known->id) == "akaneia" || std::string(known->id) == "ace");
+    set_support(d, native ? Engine::Either : Engine::Recomp, native ? Support::Supported : Support::Untested, true);
 #ifdef MELEE_NO_SLIPPI   // as for the Hack Pack above
-    d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) + ". This build cannot play it.";
+    d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) +
+                (native ? ". Plays on the Source Port: launcher > Mods > Play." : ". This build cannot play it.");
 #else
     d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) +
-                ". Plays on the Static Recomp: launcher > Mods > Play.";
+                (native ? ". Plays on either engine: launcher > Mods > Play."
+                        : ". Plays on the Static Recomp: launcher > Mods > Play.");
 #endif
     return d;
   }
@@ -921,7 +927,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 9";   // 9: the 20XX Hack Pack runs on either engine
+constexpr const char kCacheHeader[] = "mu-scan 10";   // 10: Akaneia 1.0.1 runs on either engine
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {
@@ -1500,10 +1506,14 @@ ScanOptions panel_options() {
 void rescan_async() {
   if (panel().busy.exchange(true)) return;
   std::thread([] {
-    const ScanOptions options = panel_options();
-    const ScanResult result = scan_with_choices(options);
-    publish(result, options);
-    follow_te_choice();
+    // Out of memory or a file system error ends this scan, not the game (an exception that leaves
+    // a thread function stops the process).
+    try {
+      const ScanOptions options = panel_options();
+      const ScanResult result = scan_with_choices(options);
+      publish(result, options);
+      follow_te_choice();
+    } catch (...) {}
     panel().busy = false;
   }).detach();
 }
