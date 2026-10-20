@@ -385,6 +385,7 @@ const uint8_t kRetailDolSha1[20] = {0x08, 0xe0, 0xbf, 0x20, 0x13, 0x4d, 0xfc, 0x
 // (from its installer's "ReadMe and MD5s.txt": each is the xdelta patch applied to that disc).
 constexpr const char kVanillaMd5[] = "0e63d4223b01d9aba596259dc155a174";
 constexpr const char kMelee3dMd5[] = "7643d5ca759e83f7f23a96b10e5cfe5f";   // Melee 3D 1.0 applied to kVanillaMd5
+constexpr const char kRogueMeleeSha256[] = "518d02bc9a3c38551427a48af4d7e2ac4626b2cf5db4838e5b190b0877a82ed9";   // rogueMelee 3 (its README)
 struct KnownDisc { const char* hash; const char* name; const char* version; const char* id = ""; };
 const KnownDisc kHackPackMd5[] = {
   {"4e400c49b68bc3474dbe7970ad4df6d9", "20XX Hack Pack", "4.0 Beta02"},
@@ -482,6 +483,36 @@ bool retail_dol_by_hash(std::ifstream& in, const DiscInfo& info) {
   std::string expected;
   for (uint8_t b : kRetailDolSha1) { expected += digits[b >> 4]; expected += digits[b & 15]; }
   return hex == expected;
+}
+
+// Melee Maker (BuildAMelee): the retail code plus an overlay in main.dol. It releases often, so it is
+// named by the text its overlay carries and its build id ("1.3.8-1865b7": version, then six hex digits
+// of its source hash) is read from the DOL's strings. Empty when the disc is not Melee Maker.
+constexpr const char kMeleeMakerMark[] = "BuildAMelee overlay does not fit the arena";
+constexpr const char kMeleeMakerTested[] = "1.3.8-";   // the release played through on the Static Recomp
+constexpr const char kMeleeMakerNative[] = "1.3.8-1865b7";   // its native engine reads this release's tables
+std::string melee_maker_build(std::ifstream& in, const DiscInfo& info) {
+  if (!info.dol_size) return {};
+  std::vector<uint8_t> dol(info.dol_size);
+  if (!read_at(in, info.dol_offset, dol.data(), dol.size()) || find_bytes(dol, kMeleeMakerMark) == std::string::npos) return {};
+  for (size_t i = 0; i < dol.size();) {
+    size_t end = i;
+    while (end < dol.size() && dol[end]) ++end;
+    const std::string s(dol.begin() + (std::ptrdiff_t)i, dol.begin() + (std::ptrdiff_t)end);
+    i = end + 1;
+    // digits '.' digits ['.' digits] '-' six lowercase hex digits, and nothing else
+    const size_t dash = s.find('-');
+    if (dash == std::string::npos || dash == 0 || s.size() != dash + 7) continue;
+    bool ok = std::isdigit((unsigned char)s[0]) && std::isdigit((unsigned char)s[dash - 1]);
+    int dots = 0;
+    for (size_t k = 0; ok && k < dash; ++k) {
+      if (s[k] == '.') ok = ++dots <= 2 && s[k + 1] != '.';
+      else ok = std::isdigit((unsigned char)s[k]) != 0;
+    }
+    for (size_t k = dash + 1; ok && k < s.size(); ++k) ok = std::isdigit((unsigned char)s[k]) || (s[k] >= 'a' && s[k] <= 'f');
+    if (ok && dots >= 1) return s;
+  }
+  return "unknown";
 }
 
 // The player's retail disc, parsed once per path, size and time.
@@ -830,6 +861,17 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     }
   }
   d.key = content_key(d.hash);
+  // rogueMelee (disc id GALERM): the 1.02 game with its main.dol rebuilt from the decompiled source plus
+  // its roguelike mode. That code is native in the Source Port (sourceport/game/rogue): single player,
+  // 1-P Mode > Regular Match > Rogue Mode, offline.
+  if (info.id == "GALERM" && info.revision == 2) {
+    const bool known = d.hash == kRogueMeleeSha256;
+    d.kind = Kind::CodeMod; d.name = "rogueMelee"; d.version = known ? "3" : ""; d.catalog_id = "roguemelee";
+    d.restart = true;
+    set_support(d, Engine::Source, known ? Support::Supported : Support::Untested, false);
+    d.message = "Detected: rogueMelee" + std::string(known ? " 3" : "") + ". Plays on the Source Port, offline: launcher > Mods > Play.";
+    return d;
+  }
   if (info.id == "GTME01" && info.has("/tm/eventmenu.dat")) {
     const std::string text = tmce_version(in, info);                     // "v1.4 d1"
     d.kind = Kind::TmCe; d.name = "Training Mode CE"; d.version = text; d.key = "tmce"; d.catalog_id = "tmce"; d.restart = true;
@@ -884,6 +926,26 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
                         : ". Plays on the Static Recomp: launcher > Mods > Play.");
 #endif
     return d;
+  }
+  // Melee Maker: its overlay runs on the Static Recomp, which boots a mod disc with Slippi Dolphin's
+  // memory size so the overlay sits where it was built to (host.cpp boot_setup). Its engine is also
+  // native in the Source Port (sourceport/game/maker), for the release whose bone tables the game
+  // reads from the disc (maker_source.h kBuild). Direct against the same build; the build swap rides
+  // on quick chat, as in Slippi Dolphin.
+  if (!dol_retail) {
+    if (const std::string build = melee_maker_build(in, info); !build.empty()) {
+      d.kind = Kind::CodeMod; d.name = "Melee Maker"; d.version = build; d.catalog_id = "meleemaker";
+      const bool tested = build.rfind(kMeleeMakerTested, 0) == 0;
+      const bool native = build == kMeleeMakerNative;
+      set_support(d, native ? Engine::Either : Engine::Recomp, tested ? Support::Supported : Support::Untested, false);
+#ifdef MELEE_NO_SLIPPI
+      d.message = "Detected: Melee Maker " + build + ". This build cannot play it.";
+#else
+      d.message = "Detected: Melee Maker " + build + (native ? ". Plays on either engine: launcher > Mods > Play."
+                                                              : ". Plays on the Static Recomp: launcher > Mods > Play.");
+#endif
+      return d;
+    }
   }
   if (!dol_retail || has_codes) {
     d.kind = Kind::CodeMod; d.name = title;
@@ -942,7 +1004,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 10";   // 10: Akaneia 1.0.1 runs on either engine
+constexpr const char kCacheHeader[] = "mu-scan 13";   // 13: Melee Maker 1.3.8 plays on either engine
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {
