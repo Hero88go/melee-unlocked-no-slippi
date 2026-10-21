@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-0672e5c15ae10f8208138690999b96886856bb2699a78bd5e8bc1edb6cf5c28d         8  VERSION
+5b5f350462b6f231985ce88d5388edebe3b8b53e34b5ba18656111f5feafb93b         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -64,7 +64,7 @@ ad276e23c1b5f391f9279fe9307850e696b74067b0f0bcdff10d6a856291ae74      2043  port
 505c1f43720cdae14940b87eaef52fcc136c8b153c47cb41c6242cd5d886b121      7770  port/app/launcher_theme_picker.inl
 8864bc63021abae87806522bf80c8de3159e4d34f75e439b0982aab0f091eedd      3298  port/app/launcher_trace_view.cpp
 07c928c91f95aaaef0386dab03eb06a00659ebc7a8267787d55fc3e74def1cd5      1098  port/app/launcher_trace_view.h
-b5bccc020c60a61acc3b7560230ee670766366588a907728c5ff221eabfdddc3    126062  port/app/main.cpp
+9ca1157726a6e08b2474bc54eb0bb672e76d3e7978f4e2ee2e464a91ca301430    126513  port/app/main.cpp
 ab15b8fccfb6da028413efc04388d06947a78faaf777b6a59005ccede45a9e5d    866934  port/app/melee_mark.bmp
 6670296ca0a51604e5f04aa9334511164542894c48b8f35e04eec2db84bcc67a    181772  port/app/melee_unlocked.ico
 25d87d85c98c3fab4e566f004484509544dc4240f3da3aa455311a80c631b76d      1972  port/app/melee_unlocked.rc
@@ -176,12 +176,12 @@ dc22e3dcce85f8057b56f2a8b9d81f28d65a0143d6442cb7de05a1a4a3b7c083      1715  port
 b0a317d60fdb3ce0efb8679938450d68f83cd43b2ee7364f67a80f50c15561af      8427  port/runtime/gx/replay_bar.cpp
 cef2b7ba03e52e558546741479ea2f004a5df0ae93bdb88c3d03b53390cdbcb9      1365  port/runtime/gx/replay_bar.h
 0384cba6160b978d55d715201ce21834b585763c1fb89ccbb8fbeb33af6e378e      6591  port/runtime/gx/shaders/dxr_pathtrace.hlsl
-79a8a1cad49bc4ba922adf9c7bc86b6972b13720e386097023edeb1ca5638b17     74325  port/runtime/gx/subframe.cpp
-496b50806def78e7d421b7b99cc9e9cfc0465efd3d87d22e303fd2fb382794c3      8522  port/runtime/gx/subframe.h
+86f0275980c84bd808d7700aca00ef829f7d48a458ddb65746efa5b77accce83     75859  port/runtime/gx/subframe.cpp
+06a7175da40fb30a2ec6d9a2bf54acd17e2d381fa22cd3dc150686979de83981      8820  port/runtime/gx/subframe.h
 c06ee3deefe2521773c581e959386572d32bc86312c80a84a9993020db9b60d0     43329  port/runtime/gx/texture_pack.cpp
 985d4855e81258da67ffcc07afaf775bb1476fcb7e7cf4582d44988e0148e964      5762  port/runtime/gx/texture_pack.h
 de6c41eeaec40d6a249226c9dfb9f35c2dee85a9295c3dfd1158449ab89c49e9      5397  port/runtime/gx/texture_snapshot.h
-655ed789a7909e993df145b0151bc776cbfb52f0f1f4eba4aceb5f655dcec37a     33643  port/runtime/gx/threaded_backend.cpp
+119103d069bcc0dbc0e9262142e62e78309fc1718164aab6cf96b46eb945ce43     33822  port/runtime/gx/threaded_backend.cpp
 9fece5e906782e99a950962b64fba1642b64ea2cf4250b0dfe48990a85ef9633       266  port/runtime/gx/threaded_backend.h
 0bc14e216fbc92070601c2a5e916e0e4b4f92363c7fdffd272d6d870d03e1c8d     12448  port/runtime/gx/training_overlay.cpp
 30978e8a3003f72da7e84c48825e87b0c5d00c16a6d1e5a3c042950e2d8b1131      1375  port/runtime/gx/training_overlay.h
@@ -273,7 +273,7 @@ ca26ed8cac25b55242746b05d20eb9ba99feab9c967e1e49f7b1f639f3261ef4      7423  port
 7da9657f401f60656b737c5b0fd4f3ac14fb73f6b9fc18ccd2e03b5e039887dd      4433  port/runtime/host/card_backup.h
 79fb46115d41bc537a61c8dd9d673c96143722550ae50307763a79222884f322      6339  port/runtime/host/controller_profiles.cpp
 8bf81dd99a97e51d7d63d81c1af46f69a14119872a00f4797531c5116be802eb      2524  port/runtime/host/controller_profiles.h
-e220236de7547b62a23e39fcbca55d3048b50f83be5f920ca06bf8e7771ec7ac    323709  port/runtime/host/cosmetic_mods.cpp
+10acf0c96db79a71f3db9fe42a2ecede9e3c3351ec0a49e9f5ecadb9b1c2ada5    324465  port/runtime/host/cosmetic_mods.cpp
 3bb986f4c0455ec8548b74db6c517850c92bd5952243f3611e42c9a926291c4f     23621  port/runtime/host/cosmetic_mods.h
 e6e8e2df94edb47ecde673648ee49a32c7cfa854dfb86d0f652767daadf80807      1306  port/runtime/host/disc_archive.h
 20ee740d073629bacf2a922ac8cc16b5613aa0e88f85f5ba69c6a40c9b076aba      2730  port/runtime/host/disc_fst_paths.cpp
@@ -326,7 +326,7 @@ d2cd13f1a4209ba6997e5f03d3f601616d767a5cd807b69bbb4872b12eff44d2      1394  port
 3de99b6b74b04dac56b379481c1daa29a8d16ef9e0a3400e2ac184e35aaf99a0     15457  port/runtime/host/source_mod_overlay.cpp
 90dfd5cdc8bd5367d94a505b1b2466456b336780da9e3df8d66894439dcfa289      3550  port/runtime/host/source_mod_overlay.h
 b6ec2021a5cb16201b9f62315197e75d0b30978a0067a69afa64b371d2c1b64a     18987  port/runtime/host/stage_dat_safety.h
-0a17262d06f1b3d0a2d6cbbe6361e5dbeac6d32c3ba306f5927cc081c730f820     18821  port/runtime/host/stage_graft.h
+8a420e652ba1b0ec6915507bef46e0c016badca61979fe936c9719d61854b356     19120  port/runtime/host/stage_graft.h
 7da4454b0c101fbb8ee6f7523965129728ccc0ac755640fc4407409f962cf53e      7088  port/runtime/host/static_gecko.cpp
 d0902cf2a214a9cf9ccb4b5b2064a8c7ac7fc1a2d459584524aa6561d7be090b       200  port/runtime/host/static_gecko.h
 4e18da98a076007d6e04906ced9d601ab7df850e31befd35aa2f37ea4f269b2b     34984  port/runtime/host/switch_pro.cpp
@@ -1775,7 +1775,7 @@ ff826ee828e9e45ddf5cd0ad120d51dc20c49f5889522f90b352ede7db647f5e     43784  sour
 3d49434eb5ae2197fdd82b782a9bfee6bd6ca4a1c18786c4ed6321b1c3243a29     28169  sourceport/game/tmce/src/techchase.c
 67457facbe04ebca78e4dc092788f0d4c83880b0f86410b33b2d41cf79c737db     24376  sourceport/game/tmce/src/wavedash.c
 0f2697b62ff6d97fd568808cb06c0eacfbacceb683f8bd50f4c49ea6e92d1e95      2612  sourceport/game/tmce/src/wavedash.h
-bf70d246ef7528282b6a28ee9c1243f8e6ff1bafd0c657bb1f406dc8d7f5dcd0   8136585  sourceport/patches/melee-native.patch
+1ef4d4a7526c66e45b4c8678fb03c49eb9a1eeaa2b5374ef613c12f8a12b69b5   8136934  sourceport/patches/melee-native.patch
 b504a221820abcee78d16a7339df74e54ddbc7ff0dafcfe41b64dc78111144d4      1027  sourceport/tools/cc1.sh
 084ff09116939a6837da19af6ce5a9d191efa2a31b0fb09a27ebd6d31d2a5ac4       917  sourceport/tools/check_elf_load.py
 5322d68881bc7a909f4212e5e5743f045fd78ed3920cabfbc6ce7d97c06f9ef5      2607  sourceport/tools/check_game_image.py

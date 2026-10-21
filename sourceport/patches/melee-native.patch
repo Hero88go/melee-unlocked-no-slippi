@@ -50135,7 +50135,7 @@ index 804ee9add..e51a72d5d 100644
  ASM void __shl2i(void){
  #ifdef __MWERKS__ // clang-format off
 diff --git a/src/melee/cm/camera.c b/src/melee/cm/camera.c
-index 1a8206270..83f2d6ead 100644
+index 1a8206270..6bfbad80b 100644
 --- a/src/melee/cm/camera.c
 +++ b/src/melee/cm/camera.c
 @@ -48,10 +48,15 @@
@@ -50838,7 +50838,7 @@ index 1a8206270..83f2d6ead 100644
  
      result = true;
      HSD_CObjGetEyePosition(cobj, &eye_pos);
-@@ -4313,9 +4394,31 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
+@@ -4313,9 +4394,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
      PAD_STACK(4);
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -50851,6 +50851,12 @@ index 1a8206270..83f2d6ead 100644
 +        const f32 aspect = cobj->projection_param.perspective.aspect;
 +        const bool own = HSD_CObjGetProjectionType(cobj) == PROJ_PERSPECTIVE;
 +        Vec3* on_screen;
++        /* lbVector_WorldToScreen stops the game on a point outside +-50000 (or NaN); a fighter
++         * part that far out is off screen. */
++        if (!(arg0->x > -50000.0F && arg0->x < 50000.0F && arg0->y > -50000.0F &&
++              arg0->y < 50000.0F && arg0->z > -50000.0F && arg0->z < 50000.0F)) {
++            return false;
++        }
 +        if (own) {
 +            cobj->projection_param.perspective.aspect = cm_803BCB64.aspect;
 +        }
@@ -50870,7 +50876,7 @@ index 1a8206270..83f2d6ead 100644
  
      if ((point.x > 2.1474836e9f) || (point.x < -2.1474836e9f) ||
          (point.y > 2.1474836e9f) || (point.y < -2.1474836e9f))
-@@ -4343,6 +4446,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
+@@ -4343,6 +4452,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
      return Camera_80030BBC(&arg0->bone_pos, arg1);
  }
  
@@ -50896,7 +50902,7 @@ index 1a8206270..83f2d6ead 100644
  /// Camera_IsSubjectOnScreen
  bool Camera_80030CFC(CmSubject* cam_box, f32 tolerance)
  {
-@@ -4381,6 +4503,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
+@@ -4381,6 +4509,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
  
  void Camera_80030DF8(void)
  {
@@ -50913,7 +50919,7 @@ index 1a8206270..83f2d6ead 100644
      game_camera.translation.x = game_camera.translation.y = 0;
  }
  
-@@ -4401,6 +4533,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
+@@ -4401,6 +4539,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
  {
      HSD_GObj** pquake;
      s32 quake_length;
@@ -50926,7 +50932,7 @@ index 1a8206270..83f2d6ead 100644
  
      switch (kind) {
      case QuakeKind_Loop:
-@@ -4629,3 +4767,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
+@@ -4629,3 +4773,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
      0.004f, 0.2f,    0.025f,  0.2f,  0.003f, 0.2f,   0.025f, 0.2f,  0.02f,
      1.0f,   0.14f,   1200.0f, -0.2f, 1.2f,   0.0f,
  };
