@@ -6,7 +6,7 @@ decompilation base 039c4bf4ca33338c35d21901ad19b7ede19d19ad
 84e0d53966b33126cda8ed3c3464422b65e4949307d58c8ae2ed7421cbe09a4d      1554  CMakeLists.txt
 230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809     35823  LICENSE
 92dd9c265f5b977ab0da2067946353eb2fcff2dbd9b337c21508c9b7947f1fc5      5652  NOTICE
-701121d39728bde8ab2cf24f412524e8adac9368483d743caa46ff61035ab1ab         8  VERSION
+9cae73bb5f1566018c914620af9935c13b9130a5fd7d9043676c1d16bc8e8746         8  VERSION
 674fd6d0817e7619cd6252eec2df7991843e919789d1d412197aa667c5129284     32346  docs/mu-net-protocol.md
 a12fc3911d68abc09ad942e305768cb8c8a920ba8e9c2b1f6663cf57966f764d     36829  lang/de.txt
 c8b0c605b2fd0f19c117a2ae4bd7c6fa371f2c6f69a454434a78162d95373bc5     36001  lang/es.txt
@@ -273,7 +273,7 @@ ca26ed8cac25b55242746b05d20eb9ba99feab9c967e1e49f7b1f639f3261ef4      7423  port
 7da9657f401f60656b737c5b0fd4f3ac14fb73f6b9fc18ccd2e03b5e039887dd      4433  port/runtime/host/card_backup.h
 79fb46115d41bc537a61c8dd9d673c96143722550ae50307763a79222884f322      6339  port/runtime/host/controller_profiles.cpp
 8bf81dd99a97e51d7d63d81c1af46f69a14119872a00f4797531c5116be802eb      2524  port/runtime/host/controller_profiles.h
-10acf0c96db79a71f3db9fe42a2ecede9e3c3351ec0a49e9f5ecadb9b1c2ada5    324465  port/runtime/host/cosmetic_mods.cpp
+3be12bb801656c0298ac1cbef58150cc77c3e0d2e2a6251e78a9b8676d930d8e    325820  port/runtime/host/cosmetic_mods.cpp
 3bb986f4c0455ec8548b74db6c517850c92bd5952243f3611e42c9a926291c4f     23621  port/runtime/host/cosmetic_mods.h
 e6e8e2df94edb47ecde673648ee49a32c7cfa854dfb86d0f652767daadf80807      1306  port/runtime/host/disc_archive.h
 20ee740d073629bacf2a922ac8cc16b5613aa0e88f85f5ba69c6a40c9b076aba      2730  port/runtime/host/disc_fst_paths.cpp
@@ -373,7 +373,7 @@ b9fd91e4c65aab884d1df3d23aa4525724609d4e3f343de0a013b2b7334a5f7b      2278  port
 3576540775e76c1d0e28a1644f90c72eeff211a741780615fb66b59c9dfb8eec      1894  port/runtime/ppc/render_observer.h
 8b509dfa0488b40bf6fe9fcf495eb32fac90315216e52706ea39d125d81ac73b      9956  port/runtime/ppc/stencil_format.h
 2f65d9981300b9baa85e56ec5cc56cc495799185c5afd2a1b6eaedab417ccf8d      1400  port/scripts/p2p_bot.txt
-c87e89ae5629b585957e2190516d2233cf0896831b4cf493476bbc0a43dbb885    163881  port/tests/cosmetic_mods_test.cpp
+be038817fedefa66c85814ac3856ffc5149a7c77fc9cd049d491aaaa06d7f3d1    164644  port/tests/cosmetic_mods_test.cpp
 24f389a77cbba6ee5c6ba2fa499a1ba8a1365dada53732d48375832fc0179b3d      1301  port/tests/disc_archive_test.cpp
 8fa6ca08f022aa2ee10401112ff221fea54c2f0c65cd6d27c0799ffe8008a1ad      1521  port/tests/disc_fst_paths_test.cpp
 b3ccdc462040e25b12a6917a4261258f34db20ec639ca7fa46f2847976215b22     91232  port/tests/launcher_lobby_p2p_test.cpp
@@ -1775,7 +1775,7 @@ ff826ee828e9e45ddf5cd0ad120d51dc20c49f5889522f90b352ede7db647f5e     43784  sour
 3d49434eb5ae2197fdd82b782a9bfee6bd6ca4a1c18786c4ed6321b1c3243a29     28169  sourceport/game/tmce/src/techchase.c
 67457facbe04ebca78e4dc092788f0d4c83880b0f86410b33b2d41cf79c737db     24376  sourceport/game/tmce/src/wavedash.c
 0f2697b62ff6d97fd568808cb06c0eacfbacceb683f8bd50f4c49ea6e92d1e95      2612  sourceport/game/tmce/src/wavedash.h
-1ef4d4a7526c66e45b4c8678fb03c49eb9a1eeaa2b5374ef613c12f8a12b69b5   8136934  sourceport/patches/melee-native.patch
+bd053bf2cc8bb43f732d74dd2508c33a5e17fc62e5d506d2794d6802ba8f05ba   8139866  sourceport/patches/melee-native.patch
 b504a221820abcee78d16a7339df74e54ddbc7ff0dafcfe41b64dc78111144d4      1027  sourceport/tools/cc1.sh
 084ff09116939a6837da19af6ce5a9d191efa2a31b0fb09a27ebd6d31d2a5ac4       917  sourceport/tools/check_elf_load.py
 5322d68881bc7a909f4212e5e5743f045fd78ed3920cabfbc6ce7d97c06f9ef5      2607  sourceport/tools/check_game_image.py
